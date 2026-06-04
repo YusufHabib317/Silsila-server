@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 
 import { PGlite } from "@electric-sql/pglite";
 import { and, asc, eq, inArray } from "drizzle-orm";
@@ -698,17 +698,24 @@ async function setupApiTest(): Promise<ApiTestContext> {
 }
 
 async function applyMigrations(client: PGlite): Promise<void> {
-  const migration = await readFile(
-    new URL("../drizzle/0000_furry_trish_tilby.sql", import.meta.url),
-    "utf8",
-  );
-  const statements = migration
-    .split("--> statement-breakpoint")
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationFiles = (await readdir(migrationDirectory))
+    .filter((fileName) => fileName.endsWith(".sql"))
+    .sort();
 
-  for (const statement of statements) {
-    await client.exec(statement);
+  for (const migrationFile of migrationFiles) {
+    const migration = await readFile(
+      new URL(migrationFile, migrationDirectory),
+      "utf8",
+    );
+    const statements = migration
+      .split("--> statement-breakpoint")
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+
+    for (const statement of statements) {
+      await client.exec(statement);
+    }
   }
 }
 

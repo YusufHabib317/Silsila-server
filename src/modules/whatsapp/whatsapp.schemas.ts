@@ -50,6 +50,15 @@ export const whatsappAccountListQuerySchema = z.object({
   cursor: z.string().trim().min(1).optional(),
 });
 
+export const createWhatsappAccountSchema = z.object({
+  phoneNumber: z.string().trim().min(1).max(40).nullable().optional(),
+  displayName: z.string().trim().min(1).max(160).nullable().optional(),
+});
+
+export const whatsappAccountParamsSchema = z.object({
+  id: z.string().uuid(),
+});
+
 export const whatsappChatListQuerySchema = z.object({
   whatsappAccountId: z.string().uuid().optional(),
   sourceType: z.enum(whatsappSourceTypeValues).optional(),
@@ -123,6 +132,9 @@ export type TrackedSourceStatusInput =
 export type WhatsappMessageTypeInput = (typeof whatsappMessageTypeValues)[number];
 export type WhatsappAccountListQuery = z.infer<
   typeof whatsappAccountListQuerySchema
+>;
+export type CreateWhatsappAccountInput = z.infer<
+  typeof createWhatsappAccountSchema
 >;
 export type WhatsappChatListQuery = z.infer<typeof whatsappChatListQuerySchema>;
 export type UpsertTrackedSourceInput = z.infer<

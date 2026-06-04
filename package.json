@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "bun --watch src/main.ts",
     "start": "bun src/main.ts",
+    "worker:cleanup": "bun src/workers/cleanup.main.ts",
+    "worker:cleanup:once": "bun src/workers/cleanup.main.ts --once",
+    "worker:whatsapp": "bun src/workers/whatsapp.main.ts",
     "test": "bun test",
     "check": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
@@ -20,8 +23,10 @@
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/websocket": "^11.2.0",
     "@neondatabase/serverless": "^1.1.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.6.2",
+    "pino": "^10.3.1",
     "postgres": "^3.4.9",
     "zod": "^4.1.13"
   },

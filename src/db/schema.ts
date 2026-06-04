@@ -312,6 +312,8 @@ export const whatsappAccounts = pgTable(
     lastDisconnectedAt: timestamp("last_disconnected_at", {
       withTimezone: true,
     }),
+    qrCode: text("qr_code"),
+    qrExpiresAt: timestamp("qr_expires_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: deletedAt(),
@@ -321,6 +323,34 @@ export const whatsappAccounts = pgTable(
     index("whatsapp_accounts_tenant_status_idx").on(
       table.tenantId,
       table.status,
+    ),
+  ],
+);
+
+export const whatsappAuthStates = pgTable(
+  "whatsapp_auth_states",
+  {
+    id: id(),
+    tenantId: tenantId().references(() => tenants.id),
+    whatsappAccountId: uuid("whatsapp_account_id")
+      .notNull()
+      .references(() => whatsappAccounts.id),
+    keyType: varchar("key_type", { length: 80 }).notNull(),
+    keyId: varchar("key_id", { length: 500 }).notNull(),
+    encryptedPayload: text("encrypted_payload").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex("whatsapp_auth_states_key_unique").on(
+      table.tenantId,
+      table.whatsappAccountId,
+      table.keyType,
+      table.keyId,
+    ),
+    index("whatsapp_auth_states_account_idx").on(
+      table.tenantId,
+      table.whatsappAccountId,
     ),
   ],
 );

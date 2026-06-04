@@ -15,6 +15,7 @@ import {
   auditLogs,
   trackedSources,
   whatsappAccounts,
+  whatsappAuthStates,
   whatsappChats,
   whatsappContacts,
   whatsappMessages,
@@ -25,6 +26,7 @@ import {
   encodeDateIdCursor,
 } from "../../lib/pagination.ts";
 import type {
+  CreateWhatsappAccountInput,
   TrackedSourceStatusInput,
   UpsertTrackedSourceInput,
   WhatsappAccountListQuery,
@@ -55,6 +57,12 @@ type WhatsappAccountDto = {
   lastDisconnectedAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+type WhatsappAccountDetailDto = WhatsappAccountDto & {
+  qrAvailable: boolean;
+  qrCode: string | null;
+  qrExpiresAt: string | null;
 };
 
 type TrackedSourceDto = {
@@ -201,6 +209,28 @@ function toWhatsappAccountDto(
   };
 }
 
+function isQrAvailable(account: WhatsappAccountRecord): boolean {
+  return Boolean(
+    account.status === "qr_ready" &&
+      account.qrCode &&
+      account.qrExpiresAt &&
+      account.qrExpiresAt > new Date(),
+  );
+}
+
+function toWhatsappAccountDetailDto(
+  account: WhatsappAccountRecord,
+): WhatsappAccountDetailDto {
+  const qrAvailable = isQrAvailable(account);
+
+  return {
+    ...toWhatsappAccountDto(account),
+    qrAvailable,
+    qrCode: qrAvailable ? account.qrCode : null,
+    qrExpiresAt: qrAvailable ? toNullableIsoDate(account.qrExpiresAt) : null,
+  };
+}
+
 function toTrackedSourceDto(
   trackedSource: TrackedSourceRecord,
 ): TrackedSourceDto {
@@ -289,6 +319,35 @@ async function findChatForTenant(
   return chat;
 }
 
+async function findWhatsappAccountForTenant(
+  tenantId: string,
+  whatsappAccountId: string,
+): Promise<WhatsappAccountRecord> {
+  const db = getDatabase();
+  const rows = await db
+    .select()
+    .from(whatsappAccounts)
+    .where(
+      and(
+        eq(whatsappAccounts.tenantId, tenantId),
+        eq(whatsappAccounts.id, whatsappAccountId),
+        isNull(whatsappAccounts.deletedAt),
+      ),
+    )
+    .limit(1);
+  const account = rows[0];
+
+  if (!account) {
+    throw new AppError({
+      code: "WHATSAPP_ACCOUNT_NOT_FOUND",
+      message: "WhatsApp account was not found.",
+      statusCode: 404,
+    });
+  }
+
+  return account;
+}
+
 export async function listWhatsappAccounts(
   tenantId: string,
   query: WhatsappAccountListQuery,
@@ -318,6 +377,170 @@ export async function listWhatsappAccounts(
     items: pageRows.map(toWhatsappAccountDto),
     pageInfo,
   };
+}
+
+export async function createWhatsappAccount(
+  tenantId: string,
+  actorUserId: string,
+  input: CreateWhatsappAccountInput,
+): Promise<WhatsappAccountDetailDto> {
+  const db = getDatabase();
+
+  const account = await db.transaction(async (transaction) => {
+    const accountRows = await transaction
+      .insert(whatsappAccounts)
+      .values({
+        tenantId,
+        phoneNumber: input.phoneNumber ?? null,
+        displayName: input.displayName ?? null,
+        status: "pending_qr",
+      })
+      .returning();
+    const nextAccount = accountRows[0];
+
+    if (!nextAccount) {
+      throw new AppError({
+        code: "WHATSAPP_ACCOUNT_CREATE_FAILED",
+        message: "WhatsApp account could not be created.",
+        statusCode: 500,
+      });
+    }
+
+    await transaction.insert(auditLogs).values({
+      tenantId,
+      actorUserId,
+      action: "whatsapp_account.created",
+      entityType: "whatsapp_account",
+      entityId: nextAccount.id,
+      metadata: {
+        hasPhoneNumber: Boolean(input.phoneNumber),
+        hasDisplayName: Boolean(input.displayName),
+      },
+    });
+
+    return nextAccount;
+  });
+
+  return toWhatsappAccountDetailDto(account);
+}
+
+export async function getWhatsappAccount(
+  tenantId: string,
+  whatsappAccountId: string,
+): Promise<WhatsappAccountDetailDto> {
+  const account = await findWhatsappAccountForTenant(tenantId, whatsappAccountId);
+
+  return toWhatsappAccountDetailDto(account);
+}
+
+export async function requestWhatsappAccountConnection(
+  tenantId: string,
+  actorUserId: string,
+  whatsappAccountId: string,
+): Promise<WhatsappAccountDetailDto> {
+  const db = getDatabase();
+  const updatedAt = new Date();
+
+  const account = await db.transaction(async (transaction) => {
+    const accountRows = await transaction
+      .update(whatsappAccounts)
+      .set({
+        status: "pending_qr",
+        qrCode: null,
+        qrExpiresAt: null,
+        updatedAt,
+      })
+      .where(
+        and(
+          eq(whatsappAccounts.tenantId, tenantId),
+          eq(whatsappAccounts.id, whatsappAccountId),
+          isNull(whatsappAccounts.deletedAt),
+        ),
+      )
+      .returning();
+    const nextAccount = accountRows[0];
+
+    if (!nextAccount) {
+      throw new AppError({
+        code: "WHATSAPP_ACCOUNT_NOT_FOUND",
+        message: "WhatsApp account was not found.",
+        statusCode: 404,
+      });
+    }
+
+    await transaction.insert(auditLogs).values({
+      tenantId,
+      actorUserId,
+      action: "whatsapp_account.connect_requested",
+      entityType: "whatsapp_account",
+      entityId: whatsappAccountId,
+      metadata: {},
+    });
+
+    return nextAccount;
+  });
+
+  return toWhatsappAccountDetailDto(account);
+}
+
+export async function requestWhatsappAccountDisconnect(
+  tenantId: string,
+  actorUserId: string,
+  whatsappAccountId: string,
+): Promise<WhatsappAccountDetailDto> {
+  const db = getDatabase();
+  const updatedAt = new Date();
+
+  const account = await db.transaction(async (transaction) => {
+    const accountRows = await transaction
+      .update(whatsappAccounts)
+      .set({
+        status: "disconnected",
+        lastDisconnectedAt: updatedAt,
+        qrCode: null,
+        qrExpiresAt: null,
+        updatedAt,
+      })
+      .where(
+        and(
+          eq(whatsappAccounts.tenantId, tenantId),
+          eq(whatsappAccounts.id, whatsappAccountId),
+          isNull(whatsappAccounts.deletedAt),
+        ),
+      )
+      .returning();
+    const nextAccount = accountRows[0];
+
+    if (!nextAccount) {
+      throw new AppError({
+        code: "WHATSAPP_ACCOUNT_NOT_FOUND",
+        message: "WhatsApp account was not found.",
+        statusCode: 404,
+      });
+    }
+
+    await transaction.insert(auditLogs).values({
+      tenantId,
+      actorUserId,
+      action: "whatsapp_account.disconnect_requested",
+      entityType: "whatsapp_account",
+      entityId: whatsappAccountId,
+      metadata: {},
+    });
+
+    await transaction
+      .delete(whatsappAuthStates)
+      .where(
+        and(
+          eq(whatsappAuthStates.tenantId, tenantId),
+          eq(whatsappAuthStates.whatsappAccountId, whatsappAccountId),
+        ),
+      );
+
+    return nextAccount;
+  });
+
+  return toWhatsappAccountDetailDto(account);
 }
 
 export async function listWhatsappChats(

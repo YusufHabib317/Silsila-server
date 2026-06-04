@@ -52,6 +52,11 @@ type ApiTestContext = {
   client: PGlite;
   db: TestDatabase;
   get: <TBody>(url: string, tenantId?: string) => Promise<InjectedJson<TBody>>;
+  post: <TBody>(
+    url: string,
+    payload: unknown,
+    tenantId?: string,
+  ) => Promise<InjectedJson<TBody>>;
   put: <TBody>(
     url: string,
     payload: unknown,
@@ -78,6 +83,12 @@ type WhatsappAccountDto = {
   id: string;
   status: string;
   displayName: string | null;
+};
+
+type WhatsappAccountDetailDto = WhatsappAccountDto & {
+  qrAvailable: boolean;
+  qrCode: string | null;
+  qrExpiresAt: string | null;
 };
 
 type TrackedSourceDto = {
@@ -174,6 +185,149 @@ describe("whatsapp source and inbox APIs", () => {
       expect(disconnected.body.items.map((account) => account.id)).toEqual([
         ids.accountA2,
       ]);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "creates WhatsApp accounts and exposes QR only on account detail",
+    async () => {
+      const context = await setupApiTest();
+
+      const created = await context.post<WhatsappAccountDetailDto>(
+        "/whatsapp/accounts",
+        {
+          displayName: "Main WhatsApp",
+          phoneNumber: "+963900000010",
+        },
+      );
+      expect(created.statusCode).toBe(200);
+      expect(created.body.status).toBe("pending_qr");
+      expect(created.body.displayName).toBe("Main WhatsApp");
+      expect(created.body.qrAvailable).toBe(false);
+      expect(created.body.qrCode).toBeNull();
+
+      await context.db
+        .update(schema.whatsappAccounts)
+        .set({
+          status: "qr_ready",
+          qrCode: "qr-secret-value",
+          qrExpiresAt: date("2099-01-01T00:00:00.000Z"),
+        })
+        .where(eq(schema.whatsappAccounts.id, created.body.id));
+
+      const detail = await context.get<WhatsappAccountDetailDto>(
+        `/whatsapp/accounts/${created.body.id}`,
+      );
+      expect(detail.statusCode).toBe(200);
+      expect(detail.body.qrAvailable).toBe(true);
+      expect(detail.body.qrCode).toBe("qr-secret-value");
+      expect(detail.body.qrExpiresAt).toBe("2099-01-01T00:00:00.000Z");
+
+      const list = await context.get<ListResponse<Record<string, unknown>>>(
+        "/whatsapp/accounts",
+      );
+      expect(list.statusCode).toBe(200);
+      expect("qrCode" in list.body.items[0]!).toBe(false);
+      expect("qrExpiresAt" in list.body.items[0]!).toBe(false);
+
+      const connectRequested = await context.post<WhatsappAccountDetailDto>(
+        `/whatsapp/accounts/${created.body.id}/connect`,
+        {},
+      );
+      expect(connectRequested.statusCode).toBe(200);
+      expect(connectRequested.body.status).toBe("pending_qr");
+      expect(connectRequested.body.qrAvailable).toBe(false);
+      expect(connectRequested.body.qrCode).toBeNull();
+
+      await context.db
+        .update(schema.whatsappAccounts)
+        .set({
+          status: "qr_ready",
+          qrCode: "expired-qr-secret",
+          qrExpiresAt: date("2026-01-01T00:00:00.000Z"),
+        })
+        .where(eq(schema.whatsappAccounts.id, created.body.id));
+
+      const expiredQrDetail = await context.get<WhatsappAccountDetailDto>(
+        `/whatsapp/accounts/${created.body.id}`,
+      );
+      expect(expiredQrDetail.statusCode).toBe(200);
+      expect(expiredQrDetail.body.qrAvailable).toBe(false);
+      expect(expiredQrDetail.body.qrCode).toBeNull();
+
+      await context.db.insert(schema.whatsappAuthStates).values({
+        tenantId: ids.tenantA,
+        whatsappAccountId: created.body.id,
+        keyType: "creds",
+        keyId: "creds",
+        encryptedPayload: "encrypted-test-payload",
+      });
+
+      const disconnectRequested = await context.post<WhatsappAccountDetailDto>(
+        `/whatsapp/accounts/${created.body.id}/disconnect`,
+        {},
+      );
+      expect(disconnectRequested.statusCode).toBe(200);
+      expect(disconnectRequested.body.status).toBe("disconnected");
+      expect(disconnectRequested.body.qrCode).toBeNull();
+
+      const authStateCounts = await context.db
+        .select({ value: count() })
+        .from(schema.whatsappAuthStates)
+        .where(
+          and(
+            eq(schema.whatsappAuthStates.tenantId, ids.tenantA),
+            eq(schema.whatsappAuthStates.whatsappAccountId, created.body.id),
+          ),
+        );
+      expect(authStateCounts[0]?.value).toBe(0);
+
+      const auditRows = await context.db
+        .select({
+          action: schema.auditLogs.action,
+          entityId: schema.auditLogs.entityId,
+        })
+        .from(schema.auditLogs)
+        .where(
+          and(
+            eq(schema.auditLogs.tenantId, ids.tenantA),
+            eq(schema.auditLogs.entityId, created.body.id),
+          ),
+        );
+      expect(auditRows.map((row) => row.action).sort()).toEqual([
+        "whatsapp_account.connect_requested",
+        "whatsapp_account.created",
+        "whatsapp_account.disconnect_requested",
+      ]);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "keeps GET /whatsapp/accounts/:id tenant-scoped",
+    async () => {
+      const context = await setupApiTest();
+      await seedWhatsappGraph(context.db);
+
+      const ownAccount = await context.get<WhatsappAccountDetailDto>(
+        `/whatsapp/accounts/${ids.accountA1}`,
+      );
+      expect(ownAccount.statusCode).toBe(200);
+      expect(ownAccount.body.id).toBe(ids.accountA1);
+
+      const foreignAccount = await context.get<ErrorResponse>(
+        `/whatsapp/accounts/${ids.accountB1}`,
+      );
+      expect(foreignAccount.statusCode).toBe(404);
+      expect(foreignAccount.body.error.code).toBe("WHATSAPP_ACCOUNT_NOT_FOUND");
+
+      const tenantBOwnAccount = await context.get<WhatsappAccountDetailDto>(
+        `/whatsapp/accounts/${ids.accountB1}`,
+        ids.tenantB,
+      );
+      expect(tenantBOwnAccount.statusCode).toBe(200);
+      expect(tenantBOwnAccount.body.id).toBe(ids.accountB1);
     },
     apiTestTimeoutMs,
   );
@@ -409,6 +563,24 @@ async function setupApiTest(): Promise<ApiTestContext> {
     };
   }
 
+  async function post<TBody>(
+    url: string,
+    payload: unknown,
+    tenantId = ids.tenantA,
+  ): Promise<InjectedJson<TBody>> {
+    const response = await app.inject({
+      method: "POST",
+      url,
+      headers: headersFor(tenantId, { unsafe: true }),
+      payload: JSON.stringify(payload),
+    });
+
+    return {
+      statusCode: response.statusCode,
+      body: response.json() as TBody,
+    };
+  }
+
   async function put<TBody>(
     url: string,
     payload: unknown,
@@ -432,6 +604,7 @@ async function setupApiTest(): Promise<ApiTestContext> {
     client,
     db,
     get,
+    post,
     put,
     setDatabaseForTesting: dbClient.setDatabaseForTesting,
   };

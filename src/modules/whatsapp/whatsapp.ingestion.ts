@@ -16,7 +16,7 @@ import {
 
 const temporaryMessageTtlMs = 1000 * 60 * 60 * 24;
 
-type IngestedWhatsappMessageResult = {
+export type IngestedWhatsappMessageResult = {
   tenantId: string;
   whatsappAccountId: string;
   chatId: string;

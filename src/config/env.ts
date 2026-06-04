@@ -12,6 +12,16 @@ const envSchema = z
       .default("development"),
     HOST: z.string().min(1).default("0.0.0.0"),
     PORT: z.coerce.number().int().min(1).max(65535).default(3001),
+    CLEANUP_WORKER_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(60_000)
+      .default(300_000),
+    WHATSAPP_WORKER_POLL_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .min(1_000)
+      .default(5_000),
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),

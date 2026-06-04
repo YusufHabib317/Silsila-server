@@ -15,6 +15,20 @@
       "when": 1780573842457,
       "tag": "0001_rainy_whistler",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780592986274,
+      "tag": "0002_pale_apocalypse",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1780595481987,
+      "tag": "0003_tired_tomas",
+      "breakpoints": true
     }
   ]
 }
