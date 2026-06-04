@@ -295,15 +295,16 @@ export async function listProducts(
 
   const pageRows = rows.slice(0, query.limit);
   const nextRow = rows[query.limit];
+  const cursorRow = pageRows[pageRows.length - 1];
 
   return {
     items: pageRows.map(toProductDto),
     pageInfo: {
       limit: query.limit,
-      nextCursor: nextRow
+      nextCursor: nextRow && cursorRow
         ? encodeDateIdCursor({
-            createdAt: nextRow.createdAt,
-            id: nextRow.id,
+            createdAt: cursorRow.createdAt,
+            id: cursorRow.id,
           })
         : null,
       hasMore: nextRow !== undefined,

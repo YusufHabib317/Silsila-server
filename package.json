@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun --watch src/main.ts",
     "start": "bun src/main.ts",
+    "test": "bun test",
     "check": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun scripts/migrate-neon-http.ts",
@@ -25,6 +26,7 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.1",
     "@types/bun": "^1.3.4",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.9.3"

@@ -27,13 +27,21 @@ export function getNeonQueryClient(): NeonQueryFunction<false, false> {
 }
 
 export function getDatabase(): AppDatabase {
-  const client = getNeonQueryClient();
-
   if (!database) {
+    const client = getNeonQueryClient();
     database = drizzle(client, { schema });
   }
 
   return database;
+}
+
+export function setDatabaseForTesting(testDatabase: AppDatabase | null): void {
+  if (env.NODE_ENV !== "test") {
+    throw new Error("setDatabaseForTesting can only be used in test.");
+  }
+
+  queryClient = null;
+  database = testDatabase;
 }
 
 export async function checkDatabaseConnection(): Promise<{

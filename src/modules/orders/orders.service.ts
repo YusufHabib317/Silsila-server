@@ -545,6 +545,7 @@ export async function listOrders(
 
   const pageRows = rows.slice(0, query.limit);
   const nextRow = rows[query.limit];
+  const cursorRow = pageRows[pageRows.length - 1];
   const itemsByOrderId = await loadItemsByOrderId(
     tenantId,
     pageRows.map((order) => order.id),
@@ -556,10 +557,10 @@ export async function listOrders(
     ),
     pageInfo: {
       limit: query.limit,
-      nextCursor: nextRow
+      nextCursor: nextRow && cursorRow
         ? encodeDateIdCursor({
-            createdAt: nextRow.createdAt,
-            id: nextRow.id,
+            createdAt: cursorRow.createdAt,
+            id: cursorRow.id,
           })
         : null,
       hasMore: nextRow !== undefined,
