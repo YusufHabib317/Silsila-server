@@ -57,13 +57,14 @@ function paginateRows<T extends { id: string; createdAt: Date }>(
 ): PaginatedRows<T> {
   const pageRows = rows.slice(0, limit);
   const nextRow = rows[limit];
+  const cursorRow = pageRows[pageRows.length - 1];
 
   return {
     pageRows,
-    nextCursor: nextRow
+    nextCursor: nextRow && cursorRow
       ? encodeDateIdCursor({
-          createdAt: nextRow.createdAt,
-          id: nextRow.id,
+          createdAt: cursorRow.createdAt,
+          id: cursorRow.id,
         })
       : null,
   };
