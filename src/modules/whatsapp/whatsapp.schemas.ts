@@ -86,6 +86,35 @@ export const whatsappMessageListQuerySchema = z.object({
   cursor: z.string().trim().min(1).optional(),
 });
 
+const optionalNullableTrimmedString = (maxLength: number) =>
+  z.string().trim().min(1).max(maxLength).nullable().optional();
+
+export const ingestWhatsappMessageSchema = z.object({
+  whatsappAccountId: z.string().uuid(),
+  externalMessageId: z.string().trim().min(1).max(240),
+  chat: z.object({
+    externalChatId: z.string().trim().min(1).max(240),
+    displayName: optionalNullableTrimmedString(240),
+    sourceType: z.enum(whatsappSourceTypeValues).default("unknown"),
+  }),
+  sender: z
+    .object({
+      externalContactId: z.string().trim().min(1).max(240),
+      phoneNumber: optionalNullableTrimmedString(40),
+      displayName: optionalNullableTrimmedString(180),
+    })
+    .nullable()
+    .optional(),
+  messageType: z.enum(whatsappMessageTypeValues).default("unknown"),
+  bodyText: optionalNullableTrimmedString(20_000),
+  rawPayloadJson: z
+    .unknown()
+    .refine((value) => value !== undefined, "Raw payload is required."),
+  isFromMe: z.boolean().default(false),
+  receivedAt: z.date(),
+  ingestedAt: z.date().optional(),
+});
+
 export type WhatsappAccountStatusInput =
   (typeof whatsappAccountStatusValues)[number];
 export type WhatsappSourceTypeInput = (typeof whatsappSourceTypeValues)[number];
@@ -101,4 +130,7 @@ export type UpsertTrackedSourceInput = z.infer<
 >;
 export type WhatsappMessageListQuery = z.infer<
   typeof whatsappMessageListQuerySchema
+>;
+export type IngestWhatsappMessageInput = z.input<
+  typeof ingestWhatsappMessageSchema
 >;
