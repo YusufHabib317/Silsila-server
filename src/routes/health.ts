@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 
 import { env } from "../config/env.ts";
 import { checkDatabaseConnection } from "../db/client.ts";
+import { getAdminSystemMetrics } from "../modules/admin/admin.service.ts";
 import { requirePlatformAdmin } from "../modules/auth/auth.middleware.ts";
 
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
@@ -43,18 +44,29 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
     });
   });
 
-  app.get("/admin/system-health", { preHandler: requirePlatformAdmin }, async () => ({
-    api: {
-      status: "ok",
-      service: "api",
-      checkedAt: new Date().toISOString(),
+  app.get(
+    "/admin/system-health",
+    { preHandler: requirePlatformAdmin },
+    async () => {
+      const metrics = await getAdminSystemMetrics();
+
+      return {
+        api: {
+          status: "ok",
+          service: "api",
+          checkedAt: new Date().toISOString(),
+        },
+        workers: {
+          whatsapp: "not_started",
+          cleanup: "not_started",
+        },
+        storage: {
+          r2Configured: Boolean(env.R2_BUCKET_NAME),
+          temporaryObjectCount: metrics.storage.temporaryObjectCount,
+          temporaryStorageBytes: metrics.storage.temporaryStorageBytes,
+        },
+        metrics,
+      };
     },
-    workers: {
-      whatsapp: "not_started",
-      cleanup: "not_started",
-    },
-    storage: {
-      r2Configured: Boolean(env.R2_BUCKET_NAME),
-    },
-  }));
+  );
 }

@@ -149,3 +149,15 @@ export function getCurrentTenant(request: FastifyRequest): TenantMembership {
 
   return request.currentTenant;
 }
+
+export function getCurrentUser(request: FastifyRequest): CurrentUserResult {
+  if (!request.currentUser) {
+    throw new AppError({
+      code: "AUTHENTICATION_REQUIRED",
+      message: "You must be logged in to access this resource.",
+      statusCode: 401,
+    });
+  }
+
+  return request.currentUser;
+}
