@@ -1,34 +1,37 @@
-import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
+import { neonConfig, Pool } from "@neondatabase/serverless";
 import { sql } from "drizzle-orm";
-import { drizzle, type NeonHttpDatabase } from "drizzle-orm/neon-http";
+import { drizzle, type NeonDatabase } from "drizzle-orm/neon-serverless";
 
 import { env } from "../config/env.ts";
 import * as schema from "./schema.ts";
 
-export type AppDatabase = NeonHttpDatabase<typeof schema>;
+export type AppDatabase = NeonDatabase<typeof schema>;
 
-let queryClient: NeonQueryFunction<false, false> | null = null;
+let pool: Pool | null = null;
 let database: AppDatabase | null = null;
 
 export function isDatabaseConfigured(): boolean {
   return Boolean(env.DATABASE_URL);
 }
 
-export function getNeonQueryClient(): NeonQueryFunction<false, false> {
+export function getNeonPool(): Pool {
   if (!env.DATABASE_URL) {
     throw new Error("DATABASE_URL is not configured.");
   }
 
-  if (!queryClient) {
-    queryClient = neon(env.DATABASE_URL);
+  if (!pool) {
+    neonConfig.webSocketConstructor = WebSocket;
+    pool = new Pool({
+      connectionString: env.DATABASE_URL,
+    });
   }
 
-  return queryClient;
+  return pool;
 }
 
 export function getDatabase(): AppDatabase {
   if (!database) {
-    const client = getNeonQueryClient();
+    const client = getNeonPool();
     database = drizzle(client, { schema });
   }
 
@@ -40,7 +43,7 @@ export function setDatabaseForTesting(testDatabase: AppDatabase | null): void {
     throw new Error("setDatabaseForTesting can only be used in test.");
   }
 
-  queryClient = null;
+  pool = null;
   database = testDatabase;
 }
 
@@ -56,7 +59,7 @@ export async function checkDatabaseConnection(): Promise<{
   }
 
   try {
-    const db = database ?? drizzle(neon(env.DATABASE_URL), { schema });
+    const db = database ?? getDatabase();
     await db.execute(sql`select 1`);
 
     return {
@@ -72,6 +75,12 @@ export async function checkDatabaseConnection(): Promise<{
 }
 
 export async function closeDatabase(): Promise<void> {
-  queryClient = null;
+  const currentPool = pool;
+
+  pool = null;
   database = null;
+
+  if (currentPool) {
+    await currentPool.end();
+  }
 }
