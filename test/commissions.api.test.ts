@@ -29,15 +29,18 @@ const ids = {
   tenantUserB: uuid(6),
   contactA: uuid(10),
   contactB: uuid(11),
+  contactA2: uuid(12),
   productA1: uuid(30),
   productA2: uuid(31),
   productB1: uuid(33),
   orderA1: uuid(40),
+  orderA2: uuid(41),
   orderB1: uuid(43),
   commissionA1: uuid(50),
   commissionA2: uuid(51),
   commissionA3: uuid(52),
   commissionB1: uuid(53),
+  commissionA4: uuid(54),
 } as const;
 
 type TestDatabase = PgliteDatabase<typeof schema> & {
@@ -242,6 +245,319 @@ describe("commissions API tenant graph", () => {
       ]);
       expect(secondPage.body.pageInfo.hasMore).toBe(false);
       expect(secondPage.body.pageInfo.nextCursor).toBeNull();
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "keeps GET /commissions/:id tenant-scoped",
+    async () => {
+      const context = await setupApiTest();
+
+      await seedContact(context.db, ids.tenantA, ids.contactA, "Tenant A Agent");
+      await seedContact(context.db, ids.tenantB, ids.contactB, "Tenant B Agent");
+      await seedCommission(context.db, {
+        id: ids.commissionA1,
+        tenantId: ids.tenantA,
+        contactId: ids.contactA,
+        amountMinor: 300,
+        createdAt: date("2026-03-03T00:00:00.000Z"),
+      });
+      await seedCommission(context.db, {
+        id: ids.commissionB1,
+        tenantId: ids.tenantB,
+        contactId: ids.contactB,
+        amountMinor: 400,
+        createdAt: date("2026-03-04T00:00:00.000Z"),
+      });
+
+      const ownCommission =
+        await context.get<CommissionDto>(`/commissions/${ids.commissionA1}`);
+      expect(ownCommission.statusCode).toBe(200);
+      expect(ownCommission.body.id).toBe(ids.commissionA1);
+
+      const foreignCommission =
+        await context.get<ErrorResponse>(`/commissions/${ids.commissionB1}`);
+      expect(foreignCommission.statusCode).toBe(404);
+      expect(foreignCommission.body.error.code).toBe("COMMISSION_NOT_FOUND");
+
+      const tenantBOwnCommission = await context.get<CommissionDto>(
+        `/commissions/${ids.commissionB1}`,
+        ids.tenantB,
+      );
+      expect(tenantBOwnCommission.statusCode).toBe(200);
+      expect(tenantBOwnCommission.body.id).toBe(ids.commissionB1);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "filters GET /commissions by order, product, contact, status, and type",
+    async () => {
+      const context = await setupApiTest();
+
+      await seedContact(context.db, ids.tenantA, ids.contactA, "Tenant A Agent");
+      await seedContact(
+        context.db,
+        ids.tenantA,
+        ids.contactA2,
+        "Tenant A Agent 2",
+      );
+      await seedContact(context.db, ids.tenantB, ids.contactB, "Tenant B Agent");
+      await seedProduct(context.db, {
+        id: ids.productA1,
+        tenantId: ids.tenantA,
+        name: "Tenant A Product 1",
+      });
+      await seedProduct(context.db, {
+        id: ids.productA2,
+        tenantId: ids.tenantA,
+        name: "Tenant A Product 2",
+      });
+      await seedProduct(context.db, {
+        id: ids.productB1,
+        tenantId: ids.tenantB,
+        name: "Tenant B Product",
+      });
+      await seedOrderWithItems(context.db, {
+        id: ids.orderA1,
+        tenantId: ids.tenantA,
+        orderNumber: "A-001",
+        productId: ids.productA1,
+      });
+      await seedOrderWithItems(context.db, {
+        id: ids.orderA2,
+        tenantId: ids.tenantA,
+        orderNumber: "A-002",
+        productId: ids.productA2,
+      });
+      await seedOrderWithItems(context.db, {
+        id: ids.orderB1,
+        tenantId: ids.tenantB,
+        orderNumber: "B-001",
+        productId: ids.productB1,
+      });
+      await seedCommission(context.db, {
+        id: ids.commissionA1,
+        tenantId: ids.tenantA,
+        orderId: ids.orderA1,
+        productId: ids.productA1,
+        contactId: ids.contactA,
+        commissionType: "fixed_amount",
+        status: "pending",
+        amountMinor: 100,
+        createdAt: date("2026-03-04T00:00:00.000Z"),
+      });
+      await seedCommission(context.db, {
+        id: ids.commissionA2,
+        tenantId: ids.tenantA,
+        orderId: ids.orderA2,
+        productId: ids.productA2,
+        contactId: ids.contactA2,
+        commissionType: "percentage",
+        status: "approved",
+        amountMinor: 200,
+        percentage: "12.50",
+        createdAt: date("2026-03-03T00:00:00.000Z"),
+      });
+      await seedCommission(context.db, {
+        id: ids.commissionA3,
+        tenantId: ids.tenantA,
+        contactId: ids.contactA,
+        commissionType: "manual",
+        status: "paid",
+        amountMinor: 300,
+        createdAt: date("2026-03-02T00:00:00.000Z"),
+      });
+      await seedCommission(context.db, {
+        id: ids.commissionB1,
+        tenantId: ids.tenantB,
+        orderId: ids.orderB1,
+        productId: ids.productB1,
+        contactId: ids.contactB,
+        commissionType: "fixed_amount",
+        status: "pending",
+        amountMinor: 400,
+        createdAt: date("2026-03-05T00:00:00.000Z"),
+      });
+
+      const byOrder = await context.get<CommissionListResponse>(
+        `/commissions?orderId=${ids.orderA1}`,
+      );
+      expect(byOrder.statusCode).toBe(200);
+      expect(byOrder.body.items.map((commission) => commission.id)).toEqual([
+        ids.commissionA1,
+      ]);
+
+      const byProduct = await context.get<CommissionListResponse>(
+        `/commissions?productId=${ids.productA2}`,
+      );
+      expect(byProduct.statusCode).toBe(200);
+      expect(byProduct.body.items.map((commission) => commission.id)).toEqual([
+        ids.commissionA2,
+      ]);
+
+      const byContact = await context.get<CommissionListResponse>(
+        `/commissions?contactId=${ids.contactA2}`,
+      );
+      expect(byContact.statusCode).toBe(200);
+      expect(byContact.body.items.map((commission) => commission.id)).toEqual([
+        ids.commissionA2,
+      ]);
+
+      const byStatus =
+        await context.get<CommissionListResponse>("/commissions?status=paid");
+      expect(byStatus.statusCode).toBe(200);
+      expect(byStatus.body.items.map((commission) => commission.id)).toEqual([
+        ids.commissionA3,
+      ]);
+
+      const byType = await context.get<CommissionListResponse>(
+        "/commissions?commissionType=percentage",
+      );
+      expect(byType.statusCode).toBe(200);
+      expect(byType.body.items.map((commission) => commission.id)).toEqual([
+        ids.commissionA2,
+      ]);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "validates commission amount and percentage by type",
+    async () => {
+      const context = await setupApiTest();
+
+      await seedContact(context.db, ids.tenantA, ids.contactA, "Tenant A Agent");
+
+      const fixedMissingAmount = await context.post<ErrorResponse>(
+        "/commissions",
+        {
+          contactId: ids.contactA,
+          commissionType: "fixed_amount",
+        },
+      );
+      expect(fixedMissingAmount.statusCode).toBe(400);
+      expect(fixedMissingAmount.body.error.code).toBe(
+        "COMMISSION_AMOUNT_REQUIRED",
+      );
+
+      const manualWithPercentage = await context.post<ErrorResponse>(
+        "/commissions",
+        {
+          contactId: ids.contactA,
+          commissionType: "manual",
+          amountMinor: 100,
+          percentage: 10,
+        },
+      );
+      expect(manualWithPercentage.statusCode).toBe(400);
+      expect(manualWithPercentage.body.error.code).toBe(
+        "COMMISSION_PERCENTAGE_NOT_ALLOWED",
+      );
+
+      const percentageMissingValue = await context.post<ErrorResponse>(
+        "/commissions",
+        {
+          contactId: ids.contactA,
+          commissionType: "percentage",
+        },
+      );
+      expect(percentageMissingValue.statusCode).toBe(400);
+      expect(percentageMissingValue.body.error.code).toBe(
+        "COMMISSION_PERCENTAGE_REQUIRED",
+      );
+
+      const percentageWithAmount = await context.post<ErrorResponse>(
+        "/commissions",
+        {
+          contactId: ids.contactA,
+          commissionType: "percentage",
+          amountMinor: 100,
+          percentage: 12.5,
+        },
+      );
+      expect(percentageWithAmount.statusCode).toBe(400);
+      expect(percentageWithAmount.body.error.code).toBe(
+        "COMMISSION_AMOUNT_NOT_ALLOWED",
+      );
+
+      const validPercentage = await context.post<CommissionDto>(
+        "/commissions",
+        {
+          contactId: ids.contactA,
+          commissionType: "percentage",
+          percentage: 12.5,
+        },
+      );
+      expect(validPercentage.statusCode).toBe(201);
+      expect(validPercentage.body.amountMinor).toBeNull();
+      expect(validPercentage.body.percentage).toBe(12.5);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "allows paidAt only when the commission is paid",
+    async () => {
+      const context = await setupApiTest();
+      const paidAt = "2026-04-01T00:00:00.000Z";
+
+      await seedContact(context.db, ids.tenantA, ids.contactA, "Tenant A Agent");
+
+      const pendingWithPaidAt = await context.post<ErrorResponse>(
+        "/commissions",
+        {
+          contactId: ids.contactA,
+          commissionType: "fixed_amount",
+          amountMinor: 500,
+          paidAt,
+        },
+      );
+      expect(pendingWithPaidAt.statusCode).toBe(400);
+      expect(pendingWithPaidAt.body.error.code).toBe(
+        "COMMISSION_PAID_AT_STATUS_INVALID",
+      );
+
+      const paidOnCreate = await context.post<CommissionDto>("/commissions", {
+        contactId: ids.contactA,
+        commissionType: "fixed_amount",
+        amountMinor: 500,
+        status: "paid",
+        paidAt,
+      });
+      expect(paidOnCreate.statusCode).toBe(201);
+      expect(paidOnCreate.body.status).toBe("paid");
+      expect(paidOnCreate.body.paidAt).toBe(paidAt);
+
+      const createdPending = await context.post<CommissionDto>("/commissions", {
+        contactId: ids.contactA,
+        commissionType: "manual",
+        amountMinor: 600,
+      });
+      expect(createdPending.statusCode).toBe(201);
+
+      const paidAtWithoutStatus = await context.patch<ErrorResponse>(
+        `/commissions/${createdPending.body.id}`,
+        {
+          paidAt,
+        },
+      );
+      expect(paidAtWithoutStatus.statusCode).toBe(400);
+      expect(paidAtWithoutStatus.body.error.code).toBe(
+        "COMMISSION_PAID_AT_STATUS_INVALID",
+      );
+
+      const paidOnPatch = await context.patch<CommissionDto>(
+        `/commissions/${createdPending.body.id}`,
+        {
+          status: "paid",
+          paidAt,
+        },
+      );
+      expect(paidOnPatch.statusCode).toBe(200);
+      expect(paidOnPatch.body.status).toBe("paid");
+      expect(paidOnPatch.body.paidAt).toBe(paidAt);
     },
     apiTestTimeoutMs,
   );
@@ -593,18 +909,27 @@ async function seedCommission(
   input: {
     id: string;
     tenantId: string;
+    orderId?: string;
+    productId?: string;
     contactId: string;
+    commissionType?: "fixed_amount" | "percentage" | "manual";
+    status?: "pending" | "approved" | "paid" | "cancelled";
     amountMinor: number;
+    percentage?: string;
     createdAt: Date;
   },
 ): Promise<void> {
   await db.insert(schema.commissions).values({
     id: input.id,
     tenantId: input.tenantId,
+    orderId: input.orderId ?? null,
+    productId: input.productId ?? null,
     contactId: input.contactId,
-    commissionType: "fixed_amount",
+    commissionType: input.commissionType ?? "fixed_amount",
     amountMinor: input.amountMinor,
+    percentage: input.percentage ?? null,
     currency: "SYP",
+    status: input.status ?? "pending",
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
   });

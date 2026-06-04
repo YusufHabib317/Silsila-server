@@ -63,6 +63,14 @@ type CommissionReferenceValues = {
   contactId?: string | undefined;
 };
 
+type CommissionValueValues = {
+  commissionType: CommissionRecordTypeInput;
+  amountMinor: number | null | undefined;
+  percentage: number | null | undefined;
+  status: CommissionStatusInput;
+  paidAt: Date | null | undefined;
+};
+
 type CommissionUpdateValues = {
   orderId?: string | null;
   productId?: string | null;
@@ -102,6 +110,59 @@ function toPercentageDto(value: string | null): number | null {
 
 function toStoredPercentage(value: number | null | undefined): string | null {
   return value === undefined || value === null ? null : value.toFixed(2);
+}
+
+function hasValue<TValue>(value: TValue | null | undefined): value is TValue {
+  return value !== undefined && value !== null;
+}
+
+function validateCommissionValues(values: CommissionValueValues): void {
+  if (
+    values.commissionType === "fixed_amount" ||
+    values.commissionType === "manual"
+  ) {
+    if (!hasValue(values.amountMinor)) {
+      throw new AppError({
+        code: "COMMISSION_AMOUNT_REQUIRED",
+        message: "Fixed amount and manual commissions require amountMinor.",
+        statusCode: 400,
+      });
+    }
+
+    if (hasValue(values.percentage)) {
+      throw new AppError({
+        code: "COMMISSION_PERCENTAGE_NOT_ALLOWED",
+        message: "Fixed amount and manual commissions cannot include percentage.",
+        statusCode: 400,
+      });
+    }
+  }
+
+  if (values.commissionType === "percentage") {
+    if (!hasValue(values.percentage)) {
+      throw new AppError({
+        code: "COMMISSION_PERCENTAGE_REQUIRED",
+        message: "Percentage commissions require percentage.",
+        statusCode: 400,
+      });
+    }
+
+    if (hasValue(values.amountMinor)) {
+      throw new AppError({
+        code: "COMMISSION_AMOUNT_NOT_ALLOWED",
+        message: "Percentage commissions cannot include amountMinor in v1.",
+        statusCode: 400,
+      });
+    }
+  }
+
+  if (hasValue(values.paidAt) && values.status !== "paid") {
+    throw new AppError({
+      code: "COMMISSION_PAID_AT_STATUS_INVALID",
+      message: "paidAt can only be set when commission status is paid.",
+      statusCode: 400,
+    });
+  }
 }
 
 function toCommissionDto(commission: CommissionRecord): CommissionDto {
@@ -332,6 +393,13 @@ export async function createCommission(
   input: CreateCommissionInput,
 ): Promise<CommissionDto> {
   await validateCommissionReferences(tenantId, input);
+  validateCommissionValues({
+    commissionType: input.commissionType,
+    amountMinor: input.amountMinor,
+    percentage: input.percentage,
+    status: input.status,
+    paidAt: input.paidAt,
+  });
 
   const db = getDatabase();
   const createdCommission = await db.transaction(async (transaction) => {
@@ -388,6 +456,18 @@ export async function updateCommission(
   input: UpdateCommissionInput,
 ): Promise<CommissionDto> {
   const existingCommission = await findCommissionForTenant(tenantId, commissionId);
+  const nextCommissionType =
+    input.commissionType ?? existingCommission.commissionType;
+  const nextAmountMinor = input.amountMinor !== undefined
+    ? input.amountMinor
+    : existingCommission.amountMinor;
+  const nextPercentage = input.percentage !== undefined
+    ? input.percentage
+    : toPercentageDto(existingCommission.percentage);
+  const nextStatus = input.status ?? existingCommission.status;
+  const nextPaidAt = input.paidAt !== undefined
+    ? input.paidAt
+    : existingCommission.paidAt;
 
   await validateCommissionReferences(tenantId, {
     orderId: input.orderId !== undefined
@@ -397,6 +477,13 @@ export async function updateCommission(
       ? input.productId
       : existingCommission.productId,
     contactId: input.contactId ?? existingCommission.contactId,
+  });
+  validateCommissionValues({
+    commissionType: nextCommissionType,
+    amountMinor: nextAmountMinor,
+    percentage: nextPercentage,
+    status: nextStatus,
+    paidAt: nextPaidAt,
   });
 
   const db = getDatabase();
