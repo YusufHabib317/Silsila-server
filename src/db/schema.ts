@@ -713,5 +713,6 @@ export const commissions = pgTable(
     index("commissions_tenant_status_idx").on(table.tenantId, table.status),
     index("commissions_tenant_contact_idx").on(table.tenantId, table.contactId),
     index("commissions_tenant_order_idx").on(table.tenantId, table.orderId),
+    index("commissions_tenant_product_idx").on(table.tenantId, table.productId),
   ],
 );

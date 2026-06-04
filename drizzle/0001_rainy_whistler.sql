@@ -1,0 +1,1 @@
+CREATE INDEX "commissions_tenant_product_idx" ON "commissions" USING btree ("tenant_id","product_id");
