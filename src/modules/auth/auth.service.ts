@@ -1,7 +1,8 @@
 import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 
-import { getDatabase, getNeonQueryClient } from "../../db/client.ts";
+import { getDatabase } from "../../db/client.ts";
 import {
+  auditLogs,
   platformAdmins,
   sessions,
   tenantUsers,
@@ -150,46 +151,40 @@ export async function registerTenantOwner(
 
   const passwordHash = await hashPassword(input.password);
   const tenantSlug = createTenantSlug(input.tenantName);
-  const sqlClient = getNeonQueryClient();
   const userId = crypto.randomUUID();
   const tenantId = crypto.randomUUID();
-  const tenantUserId = crypto.randomUUID();
-  const auditLogId = crypto.randomUUID();
 
-  await sqlClient.transaction((transaction) => [
-    transaction`
-      insert into users (id, email, password_hash, display_name)
-      values (${userId}, ${input.email}, ${passwordHash}, ${input.displayName})
-    `,
-    transaction`
-      insert into tenants (id, name, slug)
-      values (${tenantId}, ${input.tenantName}, ${tenantSlug})
-    `,
-    transaction`
-      insert into tenant_users (id, tenant_id, user_id, role)
-      values (${tenantUserId}, ${tenantId}, ${userId}, 'owner')
-    `,
-    transaction`
-      insert into audit_logs (
-        id,
-        tenant_id,
-        actor_user_id,
-        action,
-        entity_type,
-        entity_id,
-        metadata
-      )
-      values (
-        ${auditLogId},
-        ${tenantId},
-        ${userId},
-        'auth.registered',
-        'tenant',
-        ${tenantId},
-        ${JSON.stringify({ email: input.email })}::jsonb
-      )
-    `,
-  ]);
+  await db.transaction(async (transaction) => {
+    await transaction.insert(users).values({
+      id: userId,
+      email: input.email,
+      passwordHash,
+      displayName: input.displayName,
+    });
+
+    await transaction.insert(tenants).values({
+      id: tenantId,
+      name: input.tenantName,
+      slug: tenantSlug,
+    });
+
+    await transaction.insert(tenantUsers).values({
+      tenantId,
+      userId,
+      role: "owner",
+    });
+
+    await transaction.insert(auditLogs).values({
+      tenantId,
+      actorUserId: userId,
+      action: "auth.registered",
+      entityType: "tenant",
+      entityId: tenantId,
+      metadata: {
+        email: input.email,
+      },
+    });
+  });
 
   const session = await createSession(userId);
 
