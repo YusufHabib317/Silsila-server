@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 
 import { registerAdminRoutes } from "../modules/admin/admin.routes.ts";
 import { registerAuthRoutes } from "../modules/auth/auth.routes.ts";
+import { registerCommissionsRoutes } from "../modules/commissions/commissions.routes.ts";
 import { registerContactsRoutes } from "../modules/contacts/contacts.routes.ts";
 import { registerOrdersRoutes } from "../modules/orders/orders.routes.ts";
 import { registerProductsRoutes } from "../modules/products/products.routes.ts";
@@ -16,4 +17,5 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerContactsRoutes(app);
   await registerProductsRoutes(app);
   await registerOrdersRoutes(app);
+  await registerCommissionsRoutes(app);
 }
