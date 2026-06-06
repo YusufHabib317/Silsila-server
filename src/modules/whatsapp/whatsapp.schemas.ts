@@ -27,6 +27,14 @@ export const trackedSourceStatusValues = [
   "personal",
 ] as const;
 
+// Filter-only sentinel: chats that have no tracked-source row yet (never
+// classified). Not a real `tracked_sources.status`, so it lives apart from
+// `trackedSourceStatusValues`.
+export const trackingStatusFilterValues = [
+  ...trackedSourceStatusValues,
+  "unconfigured",
+] as const;
+
 export const whatsappMessageTypeValues = [
   "text",
   "image",
@@ -62,7 +70,7 @@ export const whatsappAccountParamsSchema = z.object({
 export const whatsappChatListQuerySchema = z.object({
   whatsappAccountId: z.string().uuid().optional(),
   sourceType: z.enum(whatsappSourceTypeValues).optional(),
-  trackingStatus: z.enum(trackedSourceStatusValues).optional(),
+  trackingStatus: z.enum(trackingStatusFilterValues).optional(),
   search: z.string().trim().min(1).max(120).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().trim().min(1).optional(),

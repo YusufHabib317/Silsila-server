@@ -693,7 +693,9 @@ export async function listWhatsappChats(
     conditions.push(eq(whatsappChats.sourceType, query.sourceType));
   }
 
-  if (query.trackingStatus) {
+  if (query.trackingStatus === "unconfigured") {
+    conditions.push(isNull(trackedSources.id));
+  } else if (query.trackingStatus) {
     conditions.push(eq(trackedSources.status, query.trackingStatus));
   }
 
