@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --watch src/main.ts",
+    "dev": "bun src/dev.ts",
+    "dev:api": "bun --watch src/main.ts",
     "start": "bun src/main.ts",
     "worker:cleanup": "bun src/workers/cleanup.main.ts",
     "worker:cleanup:once": "bun src/workers/cleanup.main.ts --once",
