@@ -320,6 +320,73 @@ describe("auth API", () => {
   );
 
   it(
+    "allows browser CORS preflights for tenant-scoped unsafe requests",
+    async () => {
+      const context = await setupApiTest();
+
+      const preflight = await context.app.inject({
+        method: "OPTIONS",
+        url: `/contacts/${ids.contactA}`,
+        headers: {
+          origin: "http://localhost:5173",
+          "access-control-request-method": "PATCH",
+          "access-control-request-headers":
+            "content-type,x-csrf-token,x-tenant-id",
+        },
+      });
+
+      const allowedHeaders = String(
+        preflight.headers["access-control-allow-headers"] ?? "",
+      ).toLowerCase();
+      const allowedMethods = String(
+        preflight.headers["access-control-allow-methods"] ?? "",
+      );
+
+      expect(preflight.statusCode).toBe(204);
+      expect(preflight.headers["access-control-allow-origin"]).toBe(
+        "http://localhost:5173",
+      );
+      expect(preflight.headers["access-control-allow-credentials"]).toBe(
+        "true",
+      );
+      expect(allowedMethods).toContain("PATCH");
+      expect(allowedHeaders).toContain("content-type");
+      expect(allowedHeaders).toContain("x-csrf-token");
+      expect(allowedHeaders).toContain("x-tenant-id");
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "updates contacts and returns the refreshed contact",
+    async () => {
+      const context = await setupApiTest();
+      await seedAuthenticatedUser(context.db);
+      await seedContacts(context.db);
+
+      const updated = await context.app.inject({
+        method: "PATCH",
+        url: `/contacts/${ids.contactA}`,
+        headers: context.sessionHeaders(ids.tenantA, { unsafe: true }),
+        payload: {
+          displayName: "Tenant A Contact Updated",
+          phoneNumber: "+963 11 222 333",
+          notes: "Updated from API test",
+          roles: ["customer"],
+          whatsappExternalContactIds: [],
+        },
+      });
+
+      expect(updated.statusCode).toBe(200);
+      const body = updated.json() as ContactResponse;
+      expect(body.displayName).toBe("Tenant A Contact Updated");
+      expect(body.phoneNumber).toBe("+963 11 222 333");
+      expect(body.whatsappIdentities).toEqual([]);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
     "requires explicit tenant selection for multi-tenant users",
     async () => {
       const context = await setupApiTest();

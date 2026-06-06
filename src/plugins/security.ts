@@ -7,6 +7,23 @@ import type { FastifyInstance } from "fastify";
 
 import { env } from "../config/env.ts";
 
+const corsAllowedHeaders = [
+  "Accept",
+  "Content-Type",
+  "X-CSRF-Token",
+  "X-Tenant-Id",
+];
+
+const corsAllowedMethods = [
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+];
+
 export async function registerCorePlugins(app: FastifyInstance): Promise<void> {
   await app.register(helmet);
 
@@ -19,7 +36,9 @@ export async function registerCorePlugins(app: FastifyInstance): Promise<void> {
 
       callback(new Error("Origin is not allowed by CORS"), false);
     },
+    allowedHeaders: corsAllowedHeaders,
     credentials: true,
+    methods: corsAllowedMethods,
   });
 
   await app.register(cookie, {
