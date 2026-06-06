@@ -42,6 +42,7 @@ describe("Baileys incoming message handler", () => {
       externalChatId: "retail-group@g.us",
       displayName: "Retail Group",
       sourceType: "merchant_group",
+      counterpartyPhoneNumber: null,
     });
     expect(normalizedMessage?.sender).toEqual({
       externalContactId: "963111111111@s.whatsapp.net",
@@ -151,6 +152,59 @@ describe("Baileys incoming message handler", () => {
     });
     expect(normalizedMessage?.messageType).toBe("text");
     expect(normalizedMessage?.bodyText).toBe("Hello from lid chat");
+  });
+
+  it("recovers the phone number from remoteJidAlt for lid-addressed chats", () => {
+    const incoming = normalizeBaileysIncomingMessage({
+      tenantId: ids.tenant,
+      whatsappAccountId: ids.account,
+      message: {
+        key: {
+          id: "LID-INCOMING",
+          remoteJid: "236975239991464@lid",
+          remoteJidAlt: "963962355928@s.whatsapp.net",
+          participant: "",
+          fromMe: false,
+          addressingMode: "lid",
+        },
+        pushName: "May",
+        messageTimestamp: 1767225600,
+        message: {
+          conversation: "hi",
+        },
+      },
+    });
+
+    expect(incoming?.chat.externalChatId).toBe("236975239991464@lid");
+    expect(incoming?.chat.counterpartyPhoneNumber).toBe("+963962355928");
+    expect(incoming?.sender).toEqual({
+      externalContactId: "236975239991464@lid",
+      phoneNumber: "+963962355928",
+      displayName: "May",
+    });
+
+    const outgoing = normalizeBaileysIncomingMessage({
+      tenantId: ids.tenant,
+      whatsappAccountId: ids.account,
+      message: {
+        key: {
+          id: "LID-OUTGOING",
+          remoteJid: "236975239991464@lid",
+          remoteJidAlt: "963962355928@s.whatsapp.net",
+          participant: "",
+          fromMe: true,
+          addressingMode: "lid",
+        },
+        messageTimestamp: 1767225600,
+        message: {
+          conversation: "thanks",
+        },
+      },
+    });
+
+    expect(outgoing?.isFromMe).toBe(true);
+    expect(outgoing?.sender).toBeNull();
+    expect(outgoing?.chat.counterpartyPhoneNumber).toBe("+963962355928");
   });
 
   it("ignores status broadcasts and payloads without user message content", () => {

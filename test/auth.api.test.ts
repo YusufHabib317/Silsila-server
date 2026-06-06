@@ -34,6 +34,8 @@ const ids = {
   tenantUserB: uuid(7),
   contactA: uuid(10),
   contactB: uuid(11),
+  whatsappAccountA: uuid(12),
+  whatsappContactA: uuid(13),
 } as const;
 
 type TestDatabase = PgliteDatabase<typeof schema> & {
@@ -97,6 +99,16 @@ type ContactListResponse = {
   items: Array<{
     id: string;
     displayName: string;
+  }>;
+};
+
+type ContactResponse = {
+  id: string;
+  displayName: string;
+  phoneNumber: string | null;
+  whatsappIdentities: Array<{
+    whatsappContactId: string;
+    externalContactId: string;
   }>;
 };
 
@@ -357,6 +369,66 @@ describe("auth API", () => {
       expect((foreignTenant.json() as ErrorResponse).error.code).toBe(
         "TENANT_ACCESS_DENIED",
       );
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "links created contacts to existing WhatsApp sender identities",
+    async () => {
+      const context = await setupApiTest();
+      await seedAuthenticatedUser(context.db);
+
+      await context.db.insert(schema.whatsappAccounts).values({
+        id: ids.whatsappAccountA,
+        tenantId: ids.tenantA,
+        displayName: "Tenant A WhatsApp",
+        status: "connected",
+      });
+      await context.db.insert(schema.whatsappContacts).values({
+        id: ids.whatsappContactA,
+        tenantId: ids.tenantA,
+        whatsappAccountId: ids.whatsappAccountA,
+        externalContactId: "236975239991464@lid",
+        phoneNumber: null,
+        displayName: "LID Sender",
+      });
+
+      const created = await context.app.inject({
+        method: "POST",
+        url: "/contacts",
+        headers: context.sessionHeaders(ids.tenantA, { unsafe: true }),
+        payload: {
+          displayName: "May",
+          whatsappExternalContactIds: ["236975239991464@lid"],
+          roles: ["customer"],
+        },
+      });
+
+      expect(created.statusCode).toBe(201);
+      const body = created.json() as ContactResponse;
+      expect(body.displayName).toBe("May");
+      expect(body.whatsappIdentities).toMatchObject([
+        {
+          whatsappContactId: ids.whatsappContactA,
+          externalContactId: "236975239991464@lid",
+        },
+      ]);
+
+      const identityRows = await context.db
+        .select()
+        .from(schema.contactWhatsappIdentities)
+        .where(
+          and(
+            eq(schema.contactWhatsappIdentities.tenantId, ids.tenantA),
+            eq(
+              schema.contactWhatsappIdentities.whatsappContactId,
+              ids.whatsappContactA,
+            ),
+          ),
+        );
+      expect(identityRows).toHaveLength(1);
+      expect(identityRows[0]?.contactId).toBe(body.id);
     },
     apiTestTimeoutMs,
   );

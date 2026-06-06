@@ -84,6 +84,7 @@ export const whatsappMessageParamsSchema = z.object({
 export const whatsappMessageListQuerySchema = z.object({
   whatsappAccountId: z.string().uuid().optional(),
   chatId: z.string().uuid().optional(),
+  contactId: z.string().uuid().optional(),
   senderContactId: z.string().uuid().optional(),
   messageType: z.enum(whatsappMessageTypeValues).optional(),
   isTracked: queryBooleanSchema.optional(),
@@ -105,6 +106,7 @@ export const ingestWhatsappMessageSchema = z.object({
     externalChatId: z.string().trim().min(1).max(240),
     displayName: optionalNullableTrimmedString(240),
     sourceType: z.enum(whatsappSourceTypeValues).default("unknown"),
+    counterpartyPhoneNumber: optionalNullableTrimmedString(40),
   }),
   sender: z
     .object({

@@ -1,7 +1,9 @@
 import { and, eq, isNull } from "drizzle-orm";
 
-import { getDatabase } from "../../db/client.ts";
+import { getDatabase, type AppDatabase } from "../../db/client.ts";
 import {
+  contacts,
+  contactWhatsappIdentities,
   trackedSources,
   whatsappAccounts,
   whatsappChats,
@@ -27,8 +29,58 @@ export type IngestedWhatsappMessageResult = {
   wasCreated: boolean;
 };
 
+type DatabaseExecutor = Pick<AppDatabase, "insert" | "select">;
+
+type WhatsappContactInput = {
+  externalContactId: string;
+  phoneNumber?: string | null | undefined;
+  displayName?: string | null | undefined;
+};
+
 function addTemporaryMessageTtl(ingestedAt: Date): Date {
   return new Date(ingestedAt.getTime() + temporaryMessageTtlMs);
+}
+
+function normalizePhoneNumber(phoneNumber: string | null | undefined): string {
+  return phoneNumber?.replace(/\D/g, "") ?? "";
+}
+
+function jidToPhoneNumber(jid: string): string | null {
+  const [rawUser, domain] = jid.split("@");
+  const user = rawUser?.split(":")[0] ?? "";
+
+  // Only phone-number addressed JIDs encode a real phone number. LID
+  // (`@lid`) and group (`@g.us`) JIDs contain opaque identifiers, not
+  // phone numbers, so they must not be coerced into a `+digits` value.
+  if (!/^\d+$/.test(user) || (domain !== "s.whatsapp.net" && domain !== "c.us")) {
+    return null;
+  }
+
+  return `+${user}`;
+}
+
+function isDirectChatExternalId(externalChatId: string): boolean {
+  return (
+    externalChatId.endsWith("@s.whatsapp.net") ||
+    externalChatId.endsWith("@lid")
+  );
+}
+
+function toOutgoingCounterpartyContactInput(input: {
+  externalChatId: string;
+  displayName?: string | null | undefined;
+  counterpartyPhoneNumber?: string | null | undefined;
+}): WhatsappContactInput | null {
+  if (!isDirectChatExternalId(input.externalChatId)) {
+    return null;
+  }
+
+  return {
+    externalContactId: input.externalChatId,
+    phoneNumber:
+      input.counterpartyPhoneNumber ?? jidToPhoneNumber(input.externalChatId),
+    displayName: input.displayName,
+  };
 }
 
 function requiredRow<TRecord>(
@@ -45,6 +97,100 @@ function requiredRow<TRecord>(
   }
 
   return row;
+}
+
+async function upsertWhatsappContact(
+  executor: DatabaseExecutor,
+  tenantId: string,
+  whatsappAccountId: string,
+  input: WhatsappContactInput,
+  updatedAt: Date,
+): Promise<typeof whatsappContacts.$inferSelect> {
+  const contactUpdateValues: Partial<typeof whatsappContacts.$inferInsert> = {
+    updatedAt,
+  };
+
+  if (input.phoneNumber !== undefined) {
+    contactUpdateValues.phoneNumber = input.phoneNumber;
+  }
+
+  if (input.displayName !== undefined) {
+    contactUpdateValues.displayName = input.displayName;
+  }
+
+  const contactRows = await executor
+    .insert(whatsappContacts)
+    .values({
+      tenantId,
+      whatsappAccountId,
+      externalContactId: input.externalContactId,
+      phoneNumber: input.phoneNumber ?? null,
+      displayName: input.displayName ?? null,
+      createdAt: updatedAt,
+      updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: [
+        whatsappContacts.tenantId,
+        whatsappContacts.whatsappAccountId,
+        whatsappContacts.externalContactId,
+      ],
+      set: contactUpdateValues,
+    })
+    .returning();
+
+  return requiredRow(
+    contactRows[0],
+    "WHATSAPP_CONTACT_INGEST_FAILED",
+    "WhatsApp contact could not be stored.",
+  );
+}
+
+async function linkWhatsappContactToMatchingSavedContact(
+  executor: DatabaseExecutor,
+  tenantId: string,
+  whatsappContactId: string,
+  phoneNumber: string | null,
+): Promise<void> {
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+
+  if (!normalizedPhoneNumber) {
+    return;
+  }
+
+  const contactRows = await executor
+    .select({
+      id: contacts.id,
+      phoneNumber: contacts.phoneNumber,
+    })
+    .from(contacts)
+    .where(and(eq(contacts.tenantId, tenantId), isNull(contacts.deletedAt)));
+  const matchingContactIds = contactRows
+    .filter(
+      (contact) =>
+        normalizePhoneNumber(contact.phoneNumber) === normalizedPhoneNumber,
+    )
+    .map((contact) => contact.id);
+
+  const matchingContactId = matchingContactIds[0];
+
+  if (matchingContactIds.length !== 1 || !matchingContactId) {
+    return;
+  }
+
+  await executor
+    .insert(contactWhatsappIdentities)
+    .values({
+      tenantId,
+      contactId: matchingContactId,
+      whatsappContactId,
+    })
+    .onConflictDoNothing({
+      target: [
+        contactWhatsappIdentities.tenantId,
+        contactWhatsappIdentities.whatsappContactId,
+      ],
+    });
 }
 
 export async function ingestWhatsappMessage(
@@ -115,46 +261,41 @@ export async function ingestWhatsappMessage(
     let senderContactId: string | null = null;
 
     if (normalizedInput.sender) {
-      const contactUpdateValues: Partial<
-        typeof whatsappContacts.$inferInsert
-      > = {
-        updatedAt: ingestedAt,
-      };
-
-      if (normalizedInput.sender.phoneNumber !== undefined) {
-        contactUpdateValues.phoneNumber = normalizedInput.sender.phoneNumber;
-      }
-
-      if (normalizedInput.sender.displayName !== undefined) {
-        contactUpdateValues.displayName = normalizedInput.sender.displayName;
-      }
-
-      const contactRows = await transaction
-        .insert(whatsappContacts)
-        .values({
-          tenantId,
-          whatsappAccountId: account.id,
-          externalContactId: normalizedInput.sender.externalContactId,
-          phoneNumber: normalizedInput.sender.phoneNumber ?? null,
-          displayName: normalizedInput.sender.displayName ?? null,
-          createdAt: ingestedAt,
-          updatedAt: ingestedAt,
-        })
-        .onConflictDoUpdate({
-          target: [
-            whatsappContacts.tenantId,
-            whatsappContacts.whatsappAccountId,
-            whatsappContacts.externalContactId,
-          ],
-          set: contactUpdateValues,
-        })
-        .returning();
-      const contact = requiredRow(
-        contactRows[0],
-        "WHATSAPP_CONTACT_INGEST_FAILED",
-        "WhatsApp contact could not be stored.",
+      const contact = await upsertWhatsappContact(
+        transaction,
+        tenantId,
+        account.id,
+        normalizedInput.sender,
+        ingestedAt,
       );
       senderContactId = contact.id;
+      await linkWhatsappContactToMatchingSavedContact(
+        transaction,
+        tenantId,
+        contact.id,
+        contact.phoneNumber,
+      );
+    } else if (normalizedInput.isFromMe) {
+      const counterpartyContactInput = toOutgoingCounterpartyContactInput(
+        normalizedInput.chat,
+      );
+
+      if (counterpartyContactInput) {
+        const contact = await upsertWhatsappContact(
+          transaction,
+          tenantId,
+          account.id,
+          counterpartyContactInput,
+          ingestedAt,
+        );
+
+        await linkWhatsappContactToMatchingSavedContact(
+          transaction,
+          tenantId,
+          contact.id,
+          contact.phoneNumber,
+        );
+      }
     }
 
     const trackedSourceRows = await transaction

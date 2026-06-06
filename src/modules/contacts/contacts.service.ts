@@ -4,14 +4,21 @@ import {
   eq,
   ilike,
   inArray,
+  isNotNull,
   isNull,
   lt,
   or,
   type SQL,
 } from "drizzle-orm";
 
-import { getDatabase } from "../../db/client.ts";
-import { auditLogs, contactRoles, contacts } from "../../db/schema.ts";
+import { getDatabase, type AppDatabase } from "../../db/client.ts";
+import {
+  auditLogs,
+  contactRoles,
+  contacts,
+  contactWhatsappIdentities,
+  whatsappContacts,
+} from "../../db/schema.ts";
 import { AppError } from "../../lib/app-error.ts";
 import {
   decodeDateIdCursor,
@@ -26,6 +33,7 @@ import type {
 
 type ContactRecord = typeof contacts.$inferSelect;
 type ContactRoleRecord = typeof contactRoles.$inferSelect;
+type DatabaseExecutor = Pick<AppDatabase, "delete" | "insert" | "select">;
 
 type ContactRoleDto = {
   id: string;
@@ -35,12 +43,23 @@ type ContactRoleDto = {
   createdAt: string;
 };
 
+type ContactWhatsappIdentityDto = {
+  id: string;
+  whatsappContactId: string;
+  whatsappAccountId: string;
+  externalContactId: string;
+  phoneNumber: string | null;
+  displayName: string | null;
+  createdAt: string;
+};
+
 type ContactDto = {
   id: string;
   displayName: string;
   phoneNumber: string | null;
   notes: string | null;
   roles: ContactRoleDto[];
+  whatsappIdentities: ContactWhatsappIdentityDto[];
   createdAt: string;
   updatedAt: string;
 };
@@ -87,9 +106,30 @@ function toRoleDto(roleAssignment: ContactRoleRecord): ContactRoleDto {
   };
 }
 
+function toWhatsappIdentityDto(identity: {
+  id: string;
+  whatsappContactId: string;
+  whatsappAccountId: string;
+  externalContactId: string;
+  phoneNumber: string | null;
+  displayName: string | null;
+  createdAt: Date;
+}): ContactWhatsappIdentityDto {
+  return {
+    id: identity.id,
+    whatsappContactId: identity.whatsappContactId,
+    whatsappAccountId: identity.whatsappAccountId,
+    externalContactId: identity.externalContactId,
+    phoneNumber: identity.phoneNumber,
+    displayName: identity.displayName,
+    createdAt: toIsoDate(identity.createdAt),
+  };
+}
+
 function toContactDto(
   contact: ContactRecord,
   roleAssignments: ContactRoleRecord[],
+  whatsappIdentities: ContactWhatsappIdentityDto[],
 ): ContactDto {
   return {
     id: contact.id,
@@ -97,9 +137,24 @@ function toContactDto(
     phoneNumber: contact.phoneNumber,
     notes: contact.notes,
     roles: roleAssignments.map(toRoleDto),
+    whatsappIdentities,
     createdAt: toIsoDate(contact.createdAt),
     updatedAt: toIsoDate(contact.updatedAt),
   };
+}
+
+function normalizePhoneNumber(phoneNumber: string | null | undefined): string {
+  return phoneNumber?.replace(/\D/g, "") ?? "";
+}
+
+function uniqueNonEmpty(values: string[]): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    ),
+  );
 }
 
 async function loadRolesByContactId(
@@ -131,6 +186,170 @@ async function loadRolesByContactId(
   }
 
   return rolesByContactId;
+}
+
+async function loadWhatsappIdentitiesByContactId(
+  tenantId: string,
+  contactIds: string[],
+): Promise<Map<string, ContactWhatsappIdentityDto[]>> {
+  const identitiesByContactId = new Map<string, ContactWhatsappIdentityDto[]>();
+
+  if (contactIds.length === 0) {
+    return identitiesByContactId;
+  }
+
+  const db = getDatabase();
+  const identityRows = await db
+    .select({
+      contactId: contactWhatsappIdentities.contactId,
+      id: contactWhatsappIdentities.id,
+      whatsappContactId: contactWhatsappIdentities.whatsappContactId,
+      whatsappAccountId: whatsappContacts.whatsappAccountId,
+      externalContactId: whatsappContacts.externalContactId,
+      phoneNumber: whatsappContacts.phoneNumber,
+      displayName: whatsappContacts.displayName,
+      createdAt: contactWhatsappIdentities.createdAt,
+    })
+    .from(contactWhatsappIdentities)
+    .innerJoin(
+      whatsappContacts,
+      and(
+        eq(whatsappContacts.tenantId, tenantId),
+        eq(whatsappContacts.id, contactWhatsappIdentities.whatsappContactId),
+      ),
+    )
+    .where(
+      and(
+        eq(contactWhatsappIdentities.tenantId, tenantId),
+        inArray(contactWhatsappIdentities.contactId, contactIds),
+      ),
+    )
+    .orderBy(desc(contactWhatsappIdentities.createdAt));
+
+  for (const identityRow of identityRows) {
+    const existingIdentities =
+      identitiesByContactId.get(identityRow.contactId) ?? [];
+    existingIdentities.push(toWhatsappIdentityDto(identityRow));
+    identitiesByContactId.set(identityRow.contactId, existingIdentities);
+  }
+
+  return identitiesByContactId;
+}
+
+async function resolveWhatsappContactIdsForContact(
+  executor: DatabaseExecutor,
+  tenantId: string,
+  phoneNumber: string | null | undefined,
+  whatsappExternalContactIds: string[],
+): Promise<string[]> {
+  const whatsappContactIds = new Set<string>();
+  const externalContactIds = uniqueNonEmpty(whatsappExternalContactIds);
+
+  if (externalContactIds.length > 0) {
+    const rows = await executor
+      .select({ id: whatsappContacts.id })
+      .from(whatsappContacts)
+      .where(
+        and(
+          eq(whatsappContacts.tenantId, tenantId),
+          inArray(whatsappContacts.externalContactId, externalContactIds),
+        ),
+      );
+
+    for (const row of rows) {
+      whatsappContactIds.add(row.id);
+    }
+  }
+
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+
+  if (normalizedPhoneNumber) {
+    const rows = await executor
+      .select({
+        id: whatsappContacts.id,
+        phoneNumber: whatsappContacts.phoneNumber,
+      })
+      .from(whatsappContacts)
+      .where(
+        and(
+          eq(whatsappContacts.tenantId, tenantId),
+          isNotNull(whatsappContacts.phoneNumber),
+        ),
+      );
+
+    for (const row of rows) {
+      if (normalizePhoneNumber(row.phoneNumber) === normalizedPhoneNumber) {
+        whatsappContactIds.add(row.id);
+      }
+    }
+  }
+
+  return Array.from(whatsappContactIds);
+}
+
+async function replaceContactWhatsappIdentities(
+  executor: DatabaseExecutor,
+  tenantId: string,
+  contactId: string,
+  phoneNumber: string | null | undefined,
+  whatsappExternalContactIds: string[],
+): Promise<void> {
+  const nextWhatsappContactIds = await resolveWhatsappContactIdsForContact(
+    executor,
+    tenantId,
+    phoneNumber,
+    whatsappExternalContactIds,
+  );
+  const nextWhatsappContactIdSet = new Set(nextWhatsappContactIds);
+
+  const existingRows = await executor
+    .select({ whatsappContactId: contactWhatsappIdentities.whatsappContactId })
+    .from(contactWhatsappIdentities)
+    .where(
+      and(
+        eq(contactWhatsappIdentities.tenantId, tenantId),
+        eq(contactWhatsappIdentities.contactId, contactId),
+      ),
+    );
+  const staleWhatsappContactIds = existingRows
+    .map((row) => row.whatsappContactId)
+    .filter((whatsappContactId) => !nextWhatsappContactIdSet.has(whatsappContactId));
+
+  if (staleWhatsappContactIds.length > 0) {
+    await executor
+      .delete(contactWhatsappIdentities)
+      .where(
+        and(
+          eq(contactWhatsappIdentities.tenantId, tenantId),
+          eq(contactWhatsappIdentities.contactId, contactId),
+          inArray(
+            contactWhatsappIdentities.whatsappContactId,
+            staleWhatsappContactIds,
+          ),
+        ),
+      );
+  }
+
+  if (nextWhatsappContactIds.length === 0) {
+    return;
+  }
+
+  await executor
+    .insert(contactWhatsappIdentities)
+    .values(
+      nextWhatsappContactIds.map((whatsappContactId) => ({
+        tenantId,
+        contactId,
+        whatsappContactId,
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [
+        contactWhatsappIdentities.tenantId,
+        contactWhatsappIdentities.whatsappContactId,
+      ],
+      set: { contactId },
+    });
 }
 
 async function findContactForTenant(
@@ -242,12 +461,17 @@ export async function listContacts(
     tenantId,
     pageRows.map((contact) => contact.id),
   );
+  const whatsappIdentitiesByContactId = await loadWhatsappIdentitiesByContactId(
+    tenantId,
+    pageRows.map((contact) => contact.id),
+  );
 
   return {
     items: pageRows.map((contact) =>
       toContactDto(
         contact,
         roleAssignmentsByContactId.get(contact.id) ?? [],
+        whatsappIdentitiesByContactId.get(contact.id) ?? [],
       ),
     ),
     pageInfo: {
@@ -269,8 +493,16 @@ export async function getContact(
 ): Promise<ContactDto> {
   const contact = await findContactForTenant(tenantId, contactId);
   const rolesByContactId = await loadRolesByContactId(tenantId, [contact.id]);
+  const whatsappIdentitiesByContactId = await loadWhatsappIdentitiesByContactId(
+    tenantId,
+    [contact.id],
+  );
 
-  return toContactDto(contact, rolesByContactId.get(contact.id) ?? []);
+  return toContactDto(
+    contact,
+    rolesByContactId.get(contact.id) ?? [],
+    whatsappIdentitiesByContactId.get(contact.id) ?? [],
+  );
 }
 
 export async function createContact(
@@ -311,6 +543,14 @@ export async function createContact(
       );
     }
 
+    await replaceContactWhatsappIdentities(
+      transaction,
+      tenantId,
+      contact.id,
+      contact.phoneNumber,
+      input.whatsappExternalContactIds,
+    );
+
     await transaction.insert(auditLogs).values({
       tenantId,
       actorUserId,
@@ -319,6 +559,7 @@ export async function createContact(
       entityId: contact.id,
       metadata: {
         assignedRoles: input.roles,
+        whatsappExternalContactIds: input.whatsappExternalContactIds,
       },
     });
 
@@ -328,10 +569,15 @@ export async function createContact(
   const rolesByContactId = await loadRolesByContactId(tenantId, [
     createdContact.id,
   ]);
+  const whatsappIdentitiesByContactId = await loadWhatsappIdentitiesByContactId(
+    tenantId,
+    [createdContact.id],
+  );
 
   return toContactDto(
     createdContact,
     rolesByContactId.get(createdContact.id) ?? [],
+    whatsappIdentitiesByContactId.get(createdContact.id) ?? [],
   );
 }
 
@@ -365,6 +611,10 @@ export async function updateContact(
 
   if (input.roles !== undefined) {
     changedFields.push("roles");
+  }
+
+  if (input.whatsappExternalContactIds !== undefined) {
+    changedFields.push("whatsappExternalContactIds");
   }
 
   const updatedContact = await db.transaction(async (transaction) => {
@@ -407,6 +657,27 @@ export async function updateContact(
       }
     }
 
+    if (
+      input.phoneNumber !== undefined ||
+      input.whatsappExternalContactIds !== undefined
+    ) {
+      const existingIdentities = await loadWhatsappIdentitiesByContactId(
+        tenantId,
+        [contactId],
+      );
+      await replaceContactWhatsappIdentities(
+        transaction,
+        tenantId,
+        contactId,
+        contact.phoneNumber,
+        input.whatsappExternalContactIds ??
+          (existingIdentities
+            .get(contactId)
+            ?.map((identity) => identity.externalContactId) ??
+            []),
+      );
+    }
+
     await transaction.insert(auditLogs).values({
       tenantId,
       actorUserId,
@@ -423,6 +694,14 @@ export async function updateContact(
   });
 
   const rolesByContactId = await loadRolesByContactId(tenantId, [contactId]);
+  const whatsappIdentitiesByContactId = await loadWhatsappIdentitiesByContactId(
+    tenantId,
+    [contactId],
+  );
 
-  return toContactDto(updatedContact, rolesByContactId.get(contactId) ?? []);
+  return toContactDto(
+    updatedContact,
+    rolesByContactId.get(contactId) ?? [],
+    whatsappIdentitiesByContactId.get(contactId) ?? [],
+  );
 }

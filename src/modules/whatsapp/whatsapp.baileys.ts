@@ -51,8 +51,11 @@ const baileysWebMessageSchema = z
       .object({
         id: optionalBaileysString,
         remoteJid: optionalBaileysString,
+        remoteJidAlt: optionalBaileysString,
         fromMe: z.boolean().nullish(),
         participant: optionalBaileysString,
+        participantAlt: optionalBaileysString,
+        addressingMode: optionalBaileysString,
       })
       .nullish(),
     message: z.unknown().nullable().optional(),
@@ -341,9 +344,26 @@ export function normalizeBaileysIncomingMessage(
   }
 
   const isFromMe = baileysMessage.key?.fromMe ?? false;
+  const remoteJidAlt = baileysMessage.key?.remoteJidAlt ?? null;
+  const participantAlt = baileysMessage.key?.participantAlt ?? null;
+
+  // WhatsApp may address chats by LID (`@lid`) instead of the phone-number
+  // JID. In that case the phone-number JID is carried alongside in the `*Alt`
+  // field, so fall back to it to recover the real phone number used to link
+  // WhatsApp contacts to saved CRM contacts.
+  const counterpartyPhoneNumber =
+    jidToPhoneNumber(externalChatId) ??
+    (remoteJidAlt ? jidToPhoneNumber(remoteJidAlt) : null);
+
   const senderJid = isFromMe
     ? null
     : baileysMessage.key?.participant ?? externalChatId;
+  const senderAltJid = isFromMe ? null : participantAlt ?? remoteJidAlt;
+  const senderPhoneNumber = senderJid
+    ? input.senderPhoneNumber ??
+      jidToPhoneNumber(senderJid) ??
+      (senderAltJid ? jidToPhoneNumber(senderAltJid) : null)
+    : null;
   const messageContent = inferMessageContent(messagePayload);
   const ingestedAt = input.ingestedAt ?? new Date();
 
@@ -354,11 +374,12 @@ export function normalizeBaileysIncomingMessage(
       externalChatId,
       displayName: input.chatDisplayName,
       sourceType: input.chatSourceType ?? "unknown",
+      counterpartyPhoneNumber,
     },
     sender: senderJid
       ? {
           externalContactId: senderJid,
-          phoneNumber: input.senderPhoneNumber ?? jidToPhoneNumber(senderJid),
+          phoneNumber: senderPhoneNumber,
           displayName: input.senderDisplayName ?? baileysMessage.pushName,
         }
       : null,

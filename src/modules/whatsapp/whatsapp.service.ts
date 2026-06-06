@@ -3,6 +3,7 @@ import {
   desc,
   eq,
   ilike,
+  inArray,
   isNull,
   lt,
   or,
@@ -13,6 +14,8 @@ import {
 import { getDatabase } from "../../db/client.ts";
 import {
   auditLogs,
+  contacts,
+  contactWhatsappIdentities,
   trackedSources,
   whatsappAccounts,
   whatsappAuthStates,
@@ -112,6 +115,11 @@ type WhatsappMessageDto = {
     phoneNumber: string | null;
     displayName: string | null;
   } | null;
+  linkedContact: {
+    id: string;
+    displayName: string;
+    phoneNumber: string | null;
+  } | null;
 };
 
 type PaginatedResult<TItem> = {
@@ -126,6 +134,9 @@ type MessageWithContext = {
   senderExternalContactId: string | null;
   senderPhoneNumber: string | null;
   senderDisplayName: string | null;
+  linkedContactId: string | null;
+  linkedContactDisplayName: string | null;
+  linkedContactPhoneNumber: string | null;
 };
 
 function combineConditions(conditions: SQL[]): SQL | undefined {
@@ -146,6 +157,20 @@ function toIsoDate(value: Date): string {
 
 function toNullableIsoDate(value: Date | null): string | null {
   return value ? toIsoDate(value) : null;
+}
+
+function normalizePhoneNumber(phoneNumber: string | null | undefined): string {
+  return phoneNumber?.replace(/\D/g, "") ?? "";
+}
+
+function phoneNumberToWhatsappJids(phoneNumber: string | null): string[] {
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+
+  if (!normalizedPhoneNumber) {
+    return [];
+  }
+
+  return [`${normalizedPhoneNumber}@s.whatsapp.net`];
 }
 
 function buildPageInfo<TRecord extends { id: string; createdAt: Date }>(
@@ -292,6 +317,13 @@ function toWhatsappMessageDto(row: MessageWithContext): WhatsappMessageDto {
           displayName: row.senderDisplayName,
         }
       : null,
+    linkedContact: row.linkedContactId
+      ? {
+          id: row.linkedContactId,
+          displayName: row.linkedContactDisplayName ?? "",
+          phoneNumber: row.linkedContactPhoneNumber,
+        }
+      : null,
   };
 }
 
@@ -346,6 +378,109 @@ async function findWhatsappAccountForTenant(
   }
 
   return account;
+}
+
+async function resolveMessageContactIdentityFilters(
+  tenantId: string,
+  contactId: string,
+): Promise<SQL | null> {
+  const db = getDatabase();
+  const contactRows = await db
+    .select({
+      phoneNumber: contacts.phoneNumber,
+    })
+    .from(contacts)
+    .where(
+      and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.id, contactId),
+        isNull(contacts.deletedAt),
+      ),
+    )
+    .limit(1);
+  const contact = contactRows[0];
+
+  if (!contact) {
+    return null;
+  }
+
+  const rows = await db
+    .select({
+      whatsappContactId: whatsappContacts.id,
+      whatsappAccountId: whatsappContacts.whatsappAccountId,
+      externalContactId: whatsappContacts.externalContactId,
+    })
+    .from(contactWhatsappIdentities)
+    .innerJoin(
+      whatsappContacts,
+      and(
+        eq(whatsappContacts.tenantId, tenantId),
+        eq(whatsappContacts.id, contactWhatsappIdentities.whatsappContactId),
+      ),
+    )
+    .innerJoin(
+      contacts,
+      and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.id, contactWhatsappIdentities.contactId),
+        isNull(contacts.deletedAt),
+      ),
+    )
+    .where(
+      and(
+        eq(contactWhatsappIdentities.tenantId, tenantId),
+        eq(contactWhatsappIdentities.contactId, contactId),
+      ),
+    );
+
+  const whatsappContactIds = new Set(
+    rows.map((row) => row.whatsappContactId),
+  );
+  const externalContactIds = new Set([
+    ...rows.map((row) => row.externalContactId),
+    ...phoneNumberToWhatsappJids(contact.phoneNumber),
+  ]);
+  const normalizedContactPhoneNumber = normalizePhoneNumber(contact.phoneNumber);
+
+  if (normalizedContactPhoneNumber) {
+    const phoneMatchedRows = await db
+      .select({
+        id: whatsappContacts.id,
+        externalContactId: whatsappContacts.externalContactId,
+        phoneNumber: whatsappContacts.phoneNumber,
+      })
+      .from(whatsappContacts)
+      .where(eq(whatsappContacts.tenantId, tenantId));
+
+    for (const row of phoneMatchedRows) {
+      if (normalizePhoneNumber(row.phoneNumber) !== normalizedContactPhoneNumber) {
+        continue;
+      }
+
+      whatsappContactIds.add(row.id);
+      externalContactIds.add(row.externalContactId);
+    }
+  }
+
+  const conditions: SQL[] = [];
+
+  if (whatsappContactIds.size > 0) {
+    conditions.push(
+      inArray(whatsappMessages.senderContactId, Array.from(whatsappContactIds)),
+    );
+  }
+
+  if (externalContactIds.size > 0) {
+    conditions.push(
+      inArray(whatsappChats.externalChatId, Array.from(externalContactIds)),
+    );
+  }
+
+  if (conditions.length === 0) {
+    return null;
+  }
+
+  return or(...conditions) ?? null;
 }
 
 export async function listWhatsappAccounts(
@@ -722,6 +857,26 @@ export async function listWhatsappMessages(
     conditions.push(eq(whatsappMessages.senderContactId, query.senderContactId));
   }
 
+  if (query.contactId) {
+    const contactIdentityCondition = await resolveMessageContactIdentityFilters(
+      tenantId,
+      query.contactId,
+    );
+
+    if (!contactIdentityCondition) {
+      return {
+        items: [],
+        pageInfo: {
+          limit: query.limit,
+          nextCursor: null,
+          hasMore: false,
+        },
+      };
+    }
+
+    conditions.push(contactIdentityCondition);
+  }
+
   if (query.messageType) {
     conditions.push(eq(whatsappMessages.messageType, query.messageType));
   }
@@ -757,6 +912,9 @@ export async function listWhatsappMessages(
       senderExternalContactId: whatsappContacts.externalContactId,
       senderPhoneNumber: whatsappContacts.phoneNumber,
       senderDisplayName: whatsappContacts.displayName,
+      linkedContactId: contacts.id,
+      linkedContactDisplayName: contacts.displayName,
+      linkedContactPhoneNumber: contacts.phoneNumber,
     })
     .from(whatsappMessages)
     .leftJoin(
@@ -771,6 +929,24 @@ export async function listWhatsappMessages(
       and(
         eq(whatsappContacts.tenantId, tenantId),
         eq(whatsappContacts.id, whatsappMessages.senderContactId),
+      ),
+    )
+    .leftJoin(
+      contactWhatsappIdentities,
+      and(
+        eq(contactWhatsappIdentities.tenantId, tenantId),
+        eq(
+          contactWhatsappIdentities.whatsappContactId,
+          whatsappMessages.senderContactId,
+        ),
+      ),
+    )
+    .leftJoin(
+      contacts,
+      and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.id, contactWhatsappIdentities.contactId),
+        isNull(contacts.deletedAt),
       ),
     )
     .where(combineConditions(conditions))
@@ -814,6 +990,9 @@ export async function getWhatsappMessage(
       senderExternalContactId: whatsappContacts.externalContactId,
       senderPhoneNumber: whatsappContacts.phoneNumber,
       senderDisplayName: whatsappContacts.displayName,
+      linkedContactId: contacts.id,
+      linkedContactDisplayName: contacts.displayName,
+      linkedContactPhoneNumber: contacts.phoneNumber,
     })
     .from(whatsappMessages)
     .leftJoin(
@@ -828,6 +1007,24 @@ export async function getWhatsappMessage(
       and(
         eq(whatsappContacts.tenantId, tenantId),
         eq(whatsappContacts.id, whatsappMessages.senderContactId),
+      ),
+    )
+    .leftJoin(
+      contactWhatsappIdentities,
+      and(
+        eq(contactWhatsappIdentities.tenantId, tenantId),
+        eq(
+          contactWhatsappIdentities.whatsappContactId,
+          whatsappMessages.senderContactId,
+        ),
+      ),
+    )
+    .leftJoin(
+      contacts,
+      and(
+        eq(contacts.tenantId, tenantId),
+        eq(contacts.id, contactWhatsappIdentities.contactId),
+        isNull(contacts.deletedAt),
       ),
     )
     .where(

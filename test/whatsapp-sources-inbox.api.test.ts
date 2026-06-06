@@ -34,13 +34,17 @@ const ids = {
   chatA2: uuid(21),
   chatA3: uuid(22),
   chatB1: uuid(23),
+  chatA4: uuid(24),
   trackedA1: uuid(30),
   contactA1: uuid(40),
   contactB1: uuid(41),
+  savedContactA1: uuid(42),
+  savedContactB1: uuid(43),
   messageA1: uuid(50),
   messageA2: uuid(51),
   messageA3: uuid(52),
   messageB1: uuid(53),
+  messageA4: uuid(54),
 } as const;
 
 type TestDatabase = PgliteDatabase<typeof schema> & {
@@ -110,6 +114,7 @@ type WhatsappMessageDto = {
   externalMessageId: string;
   messageType: string;
   bodyText: string | null;
+  isFromMe: boolean;
   isArchived: boolean;
   chat: {
     externalChatId: string;
@@ -119,6 +124,11 @@ type WhatsappMessageDto = {
     externalContactId: string;
     phoneNumber: string | null;
     displayName: string | null;
+  } | null;
+  linkedContact: {
+    id: string;
+    displayName: string;
+    phoneNumber: string | null;
   } | null;
 };
 
@@ -443,6 +453,11 @@ describe("whatsapp source and inbox APIs", () => {
       expect("rawPayloadJson" in firstPage.body.items[0]!).toBe(false);
       expect(firstPage.body.items[0]?.chat?.displayName).toBe("Retail Group");
       expect(firstPage.body.items[0]?.sender?.phoneNumber).toBe("+963111111111");
+      expect(firstPage.body.items[0]?.linkedContact).toEqual({
+        id: ids.savedContactA1,
+        displayName: "Saved Sender A",
+        phoneNumber: "+963111111111",
+      });
 
       const nextCursor = firstPage.body.pageInfo.nextCursor;
       if (!nextCursor) {
@@ -455,7 +470,9 @@ describe("whatsapp source and inbox APIs", () => {
       expect(secondPage.statusCode).toBe(200);
       expect(secondPage.body.items.map((message) => message.id)).toEqual([
         ids.messageA3,
+        ids.messageA4,
       ]);
+      expect(secondPage.body.items[0]?.linkedContact).toBeNull();
 
       const archivedImages = await context.get<ListResponse<WhatsappMessageDto>>(
         "/whatsapp/messages?messageType=image&isArchived=true",
@@ -477,6 +494,60 @@ describe("whatsapp source and inbox APIs", () => {
   );
 
   it(
+    "filters GET /whatsapp/messages by saved contact across incoming and outgoing one-to-one messages",
+    async () => {
+      const context = await setupApiTest();
+      await seedWhatsappGraph(context.db);
+
+      const response = await context.get<ListResponse<WhatsappMessageDto>>(
+        `/whatsapp/messages?contactId=${ids.savedContactA1}`,
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.items.map((message) => message.id)).toEqual([
+        ids.messageA1,
+        ids.messageA2,
+        ids.messageA4,
+      ]);
+      expect(response.body.items[0]?.linkedContact?.id).toBe(
+        ids.savedContactA1,
+      );
+      expect(response.body.items[2]?.isFromMe).toBe(true);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
+    "filters GET /whatsapp/messages by saved contact phone when identity is missing",
+    async () => {
+      const context = await setupApiTest();
+      await seedWhatsappGraph(context.db);
+
+      await context.db
+        .delete(schema.contactWhatsappIdentities)
+        .where(
+          and(
+            eq(schema.contactWhatsappIdentities.tenantId, ids.tenantA),
+            eq(schema.contactWhatsappIdentities.contactId, ids.savedContactA1),
+          ),
+        );
+
+      const response = await context.get<ListResponse<WhatsappMessageDto>>(
+        `/whatsapp/messages?contactId=${ids.savedContactA1}`,
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.items.map((message) => message.id)).toEqual([
+        ids.messageA1,
+        ids.messageA2,
+        ids.messageA4,
+      ]);
+      expect(response.body.items[2]?.isFromMe).toBe(true);
+    },
+    apiTestTimeoutMs,
+  );
+
+  it(
     "keeps GET /whatsapp/messages/:id tenant-scoped",
     async () => {
       const context = await setupApiTest();
@@ -487,6 +558,7 @@ describe("whatsapp source and inbox APIs", () => {
       );
       expect(ownMessage.statusCode).toBe(200);
       expect(ownMessage.body.id).toBe(ids.messageA1);
+      expect(ownMessage.body.linkedContact?.id).toBe(ids.savedContactA1);
 
       const foreignMessage = await context.get<ErrorResponse>(
         `/whatsapp/messages/${ids.messageB1}`,
@@ -746,6 +818,16 @@ async function seedWhatsappGraph(db: TestDatabase): Promise<void> {
       updatedAt: date("2026-01-02T00:00:00.000Z"),
     },
     {
+      id: ids.chatA4,
+      tenantId: ids.tenantA,
+      whatsappAccountId: ids.accountA1,
+      externalChatId: "963111111111@s.whatsapp.net",
+      displayName: "Sender A Direct",
+      sourceType: "customer_chat",
+      createdAt: date("2026-01-01T00:00:00.000Z"),
+      updatedAt: date("2026-01-01T00:00:00.000Z"),
+    },
+    {
       id: ids.chatB1,
       tenantId: ids.tenantB,
       whatsappAccountId: ids.accountB1,
@@ -785,6 +867,38 @@ async function seedWhatsappGraph(db: TestDatabase): Promise<void> {
       externalContactId: "963222222222@s.whatsapp.net",
       phoneNumber: "+963222222222",
       displayName: "Sender B",
+    },
+  ]);
+
+  await db.insert(schema.contacts).values([
+    {
+      id: ids.savedContactA1,
+      tenantId: ids.tenantA,
+      displayName: "Saved Sender A",
+      phoneNumber: "+963111111111",
+      createdAt: date("2026-01-04T02:00:00.000Z"),
+      updatedAt: date("2026-01-04T02:00:00.000Z"),
+    },
+    {
+      id: ids.savedContactB1,
+      tenantId: ids.tenantB,
+      displayName: "Saved Sender B",
+      phoneNumber: "+963222222222",
+      createdAt: date("2026-01-04T02:00:00.000Z"),
+      updatedAt: date("2026-01-04T02:00:00.000Z"),
+    },
+  ]);
+
+  await db.insert(schema.contactWhatsappIdentities).values([
+    {
+      tenantId: ids.tenantA,
+      contactId: ids.savedContactA1,
+      whatsappContactId: ids.contactA1,
+    },
+    {
+      tenantId: ids.tenantB,
+      contactId: ids.savedContactB1,
+      whatsappContactId: ids.contactB1,
     },
   ]);
 
@@ -868,6 +982,27 @@ async function seedWhatsappGraph(db: TestDatabase): Promise<void> {
       receivedAt: date("2026-01-04T11:00:00.000Z"),
       createdAt: date("2026-01-04T11:00:00.000Z"),
       updatedAt: date("2026-01-04T11:00:00.000Z"),
+    },
+    {
+      id: ids.messageA4,
+      tenantId: ids.tenantA,
+      whatsappAccountId: ids.accountA1,
+      chatId: ids.chatA4,
+      senderContactId: null,
+      externalMessageId: "a-msg-4",
+      messageType: "text",
+      bodyText: "Outgoing follow-up",
+      rawPayloadJson: { test: true },
+      isFromMe: true,
+      isTracked: false,
+      isLinked: false,
+      isArchived: false,
+      isPersonal: false,
+      isTemporary: true,
+      expiresAt: date("2026-01-05T00:00:00.000Z"),
+      receivedAt: date("2026-01-04T07:00:00.000Z"),
+      createdAt: date("2026-01-04T07:00:00.000Z"),
+      updatedAt: date("2026-01-04T07:00:00.000Z"),
     },
   ]);
 }

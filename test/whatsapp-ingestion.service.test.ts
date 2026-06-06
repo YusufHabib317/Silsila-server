@@ -20,6 +20,7 @@ const ids = {
   accountB: uuid(11),
   chatIgnored: uuid(20),
   trackedIgnored: uuid(30),
+  savedContactA: uuid(40),
 } as const;
 
 type TestDatabase = PgliteDatabase<typeof schema> & {
@@ -114,6 +115,145 @@ describe("WhatsApp message ingestion", () => {
       expect(messageRows[0]?.isTemporary).toBe(true);
       expect(messageRows[0]?.expiresAt.toISOString()).toBe(
         "2026-01-02T00:00:00.000Z",
+      );
+    },
+    serviceTestTimeoutMs,
+  );
+
+  it(
+    "links outgoing one-to-one messages to saved contacts by phone",
+    async () => {
+      const context = await setupServiceTest();
+      const ingestedAt = date("2026-01-01T00:30:00.000Z");
+
+      await context.db.insert(schema.contacts).values({
+        id: ids.savedContactA,
+        tenantId: ids.tenantA,
+        displayName: "Saved Customer A",
+        phoneNumber: "+963111111111",
+      });
+
+      const result = await context.ingestWhatsappMessage(ids.tenantA, {
+        whatsappAccountId: ids.accountA,
+        externalMessageId: "outgoing-direct-msg",
+        chat: {
+          externalChatId: "963111111111@s.whatsapp.net",
+          displayName: "Customer A Direct",
+          sourceType: "customer_chat",
+        },
+        messageType: "text",
+        bodyText: "Thanks, your order is confirmed",
+        rawPayloadJson: {
+          fromMe: true,
+        },
+        isFromMe: true,
+        receivedAt: date("2026-01-01T00:30:05.000Z"),
+        ingestedAt,
+      });
+
+      expect(result.wasCreated).toBe(true);
+      expect(result.senderContactId).toBeNull();
+
+      const whatsappContactRows = await context.db
+        .select()
+        .from(schema.whatsappContacts)
+        .where(
+          and(
+            eq(schema.whatsappContacts.tenantId, ids.tenantA),
+            eq(
+              schema.whatsappContacts.externalContactId,
+              "963111111111@s.whatsapp.net",
+            ),
+          ),
+        );
+      expect(whatsappContactRows).toHaveLength(1);
+      expect(whatsappContactRows[0]?.phoneNumber).toBe("+963111111111");
+
+      const identityRows = await context.db
+        .select()
+        .from(schema.contactWhatsappIdentities)
+        .where(
+          and(
+            eq(schema.contactWhatsappIdentities.tenantId, ids.tenantA),
+            eq(schema.contactWhatsappIdentities.contactId, ids.savedContactA),
+          ),
+        );
+      expect(identityRows).toHaveLength(1);
+      expect(identityRows[0]?.whatsappContactId).toBe(
+        whatsappContactRows[0]?.id,
+      );
+
+      const messageRows = await context.db
+        .select()
+        .from(schema.whatsappMessages)
+        .where(eq(schema.whatsappMessages.id, result.messageId));
+      expect(messageRows[0]?.isFromMe).toBe(true);
+      expect(messageRows[0]?.senderContactId).toBeNull();
+    },
+    serviceTestTimeoutMs,
+  );
+
+  it(
+    "links lid-addressed messages to saved contacts via counterparty phone",
+    async () => {
+      const context = await setupServiceTest();
+      const ingestedAt = date("2026-01-01T00:45:00.000Z");
+
+      await context.db.insert(schema.contacts).values({
+        id: ids.savedContactA,
+        tenantId: ids.tenantA,
+        displayName: "Saved Customer A",
+        phoneNumber: "+963 962355928",
+      });
+
+      const result = await context.ingestWhatsappMessage(ids.tenantA, {
+        whatsappAccountId: ids.accountA,
+        externalMessageId: "lid-outgoing-msg",
+        chat: {
+          externalChatId: "236975239991464@lid",
+          displayName: "Customer A Lid",
+          sourceType: "customer_chat",
+          counterpartyPhoneNumber: "+963962355928",
+        },
+        messageType: "text",
+        bodyText: "Order confirmed",
+        rawPayloadJson: {
+          fromMe: true,
+        },
+        isFromMe: true,
+        receivedAt: date("2026-01-01T00:45:05.000Z"),
+        ingestedAt,
+      });
+
+      expect(result.wasCreated).toBe(true);
+
+      const whatsappContactRows = await context.db
+        .select()
+        .from(schema.whatsappContacts)
+        .where(
+          and(
+            eq(schema.whatsappContacts.tenantId, ids.tenantA),
+            eq(
+              schema.whatsappContacts.externalContactId,
+              "236975239991464@lid",
+            ),
+          ),
+        );
+      expect(whatsappContactRows).toHaveLength(1);
+      expect(whatsappContactRows[0]?.phoneNumber).toBe("+963962355928");
+
+      const identityRows = await context.db
+        .select()
+        .from(schema.contactWhatsappIdentities)
+        .where(
+          and(
+            eq(schema.contactWhatsappIdentities.tenantId, ids.tenantA),
+            eq(schema.contactWhatsappIdentities.contactId, ids.savedContactA),
+          ),
+        );
+      expect(identityRows).toHaveLength(1);
+      expect(identityRows[0]?.whatsappContactId).toBe(
+        whatsappContactRows[0]?.id,
       );
     },
     serviceTestTimeoutMs,
