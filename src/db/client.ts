@@ -24,6 +24,11 @@ export function getNeonPool(): Pool {
     pool = new Pool({
       connectionString: env.DATABASE_URL,
     });
+    
+    // Add error listener to prevent unhandled error crashes when connections close unexpectedly
+    pool.on('error', (err: Error) => {
+      console.error('Unexpected error on idle Neon database client', err);
+    });
   }
 
   return pool;
