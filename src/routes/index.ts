@@ -4,6 +4,7 @@ import { registerAdminRoutes } from "../modules/admin/admin.routes.ts";
 import { registerAuthRoutes } from "../modules/auth/auth.routes.ts";
 import { registerCommissionsRoutes } from "../modules/commissions/commissions.routes.ts";
 import { registerContactsRoutes } from "../modules/contacts/contacts.routes.ts";
+import { registerDashboardRoutes } from "../modules/dashboard/dashboard.routes.ts";
 import { registerOrdersRoutes } from "../modules/orders/orders.routes.ts";
 import { registerProductsRoutes } from "../modules/products/products.routes.ts";
 import { registerWhatsappRoutes } from "../modules/whatsapp/whatsapp.routes.ts";
@@ -16,6 +17,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerAuthRoutes(app);
   await registerAdminRoutes(app);
   await registerWhatsappRoutes(app);
+  await registerDashboardRoutes(app);
   await registerContactsRoutes(app);
   await registerProductsRoutes(app);
   await registerOrdersRoutes(app);
