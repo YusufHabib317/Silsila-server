@@ -37,19 +37,27 @@ type BaileysHandlerDependencies = {
   ) => Promise<IngestedWhatsappMessageResult>;
 };
 
+const optionalBaileysString = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim().length === 0
+      ? undefined
+      : value,
+  z.string().trim().min(1).nullish(),
+);
+
 const baileysWebMessageSchema = z
   .object({
     key: z
       .object({
-        id: z.string().trim().min(1).optional(),
-        remoteJid: z.string().trim().min(1).optional(),
-        fromMe: z.boolean().optional(),
-        participant: z.string().trim().min(1).optional(),
+        id: optionalBaileysString,
+        remoteJid: optionalBaileysString,
+        fromMe: z.boolean().nullish(),
+        participant: optionalBaileysString,
       })
-      .optional(),
-    message: z.record(z.string(), z.unknown()).nullable().optional(),
+      .nullish(),
+    message: z.unknown().nullable().optional(),
     messageTimestamp: z.unknown().optional(),
-    pushName: z.string().trim().min(1).optional(),
+    pushName: optionalBaileysString,
   })
   .passthrough();
 
@@ -114,6 +122,10 @@ function toJsonSafeValue(
   }
 
   return String(value);
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function unwrapMessageContainer(
@@ -284,9 +296,13 @@ function parseBaileysTimestamp(value: unknown, fallback: Date): Date {
 }
 
 function jidToPhoneNumber(jid: string): string | null {
-  const [rawUser] = jid.split("@");
+  const [rawUser, domain] = jid.split("@");
 
-  if (!rawUser || !/^\d+$/.test(rawUser)) {
+  if (
+    !rawUser ||
+    !/^\d+$/.test(rawUser) ||
+    (domain !== "s.whatsapp.net" && domain !== "c.us")
+  ) {
     return null;
   }
 
@@ -303,14 +319,20 @@ export function normalizeBaileysIncomingMessage(
       code: "BAILEYS_MESSAGE_INVALID",
       message: "Incoming WhatsApp message payload is invalid.",
       statusCode: 400,
+      details: parsedMessage.error.issues,
     });
   }
 
   const baileysMessage = parsedMessage.data;
   const externalMessageId = baileysMessage.key?.id;
   const externalChatId = baileysMessage.key?.remoteJid;
+  const messagePayload = baileysMessage.message;
 
-  if (!externalMessageId || !externalChatId || !baileysMessage.message) {
+  if (
+    !externalMessageId ||
+    !externalChatId ||
+    !isObjectRecord(messagePayload)
+  ) {
     return null;
   }
 
@@ -322,7 +344,7 @@ export function normalizeBaileysIncomingMessage(
   const senderJid = isFromMe
     ? null
     : baileysMessage.key?.participant ?? externalChatId;
-  const messageContent = inferMessageContent(baileysMessage.message);
+  const messageContent = inferMessageContent(messagePayload);
   const ingestedAt = input.ingestedAt ?? new Date();
 
   return {

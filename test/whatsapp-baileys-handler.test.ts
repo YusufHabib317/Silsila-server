@@ -116,6 +116,43 @@ describe("Baileys incoming message handler", () => {
     });
   });
 
+  it("accepts sparse Baileys metadata, lid chat ids, and message instances", () => {
+    class Message {
+      conversation = "Hello from lid chat";
+    }
+
+    const normalizedMessage = normalizeBaileysIncomingMessage({
+      tenantId: ids.tenant,
+      whatsappAccountId: ids.account,
+      message: {
+        key: {
+          id: "ACF0394991133A5CA20ED49FED81C277",
+          remoteJid: "236975239991464@lid",
+          participant: "",
+          fromMe: false,
+        },
+        pushName: null,
+        messageTimestamp: 1767225600,
+        message: new Message(),
+      },
+    });
+
+    expect(normalizedMessage).not.toBeNull();
+    expect(normalizedMessage?.externalMessageId).toBe(
+      "ACF0394991133A5CA20ED49FED81C277",
+    );
+    expect(normalizedMessage?.chat.externalChatId).toBe(
+      "236975239991464@lid",
+    );
+    expect(normalizedMessage?.sender).toEqual({
+      externalContactId: "236975239991464@lid",
+      phoneNumber: null,
+      displayName: null,
+    });
+    expect(normalizedMessage?.messageType).toBe("text");
+    expect(normalizedMessage?.bodyText).toBe("Hello from lid chat");
+  });
+
   it("ignores status broadcasts and payloads without user message content", () => {
     const statusBroadcast = normalizeBaileysIncomingMessage({
       tenantId: ids.tenant,
