@@ -191,6 +191,7 @@ async function loadRolesByContactId(
 async function loadWhatsappIdentitiesByContactId(
   tenantId: string,
   contactIds: string[],
+  executor: Pick<AppDatabase, "select"> = getDatabase(),
 ): Promise<Map<string, ContactWhatsappIdentityDto[]>> {
   const identitiesByContactId = new Map<string, ContactWhatsappIdentityDto[]>();
 
@@ -198,8 +199,7 @@ async function loadWhatsappIdentitiesByContactId(
     return identitiesByContactId;
   }
 
-  const db = getDatabase();
-  const identityRows = await db
+  const identityRows = await executor
     .select({
       contactId: contactWhatsappIdentities.contactId,
       id: contactWhatsappIdentities.id,
@@ -664,6 +664,7 @@ export async function updateContact(
       const existingIdentities = await loadWhatsappIdentitiesByContactId(
         tenantId,
         [contactId],
+        transaction,
       );
       await replaceContactWhatsappIdentities(
         transaction,
